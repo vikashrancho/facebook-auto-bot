@@ -132,6 +132,11 @@ create table if not exists templates (
   background_gradient text,
   background_color text,
   overlay_opacity numeric not null default 0.2,
+  logo_url text,
+  logo_position text default 'top-right',
+  logo_size integer default 120,
+  logo_opacity numeric default 1.0,
+  show_logo_backdrop boolean default false,
   text_elements jsonb not null default '[]'::jsonb,
   category text default 'Custom',
   created_at timestamptz not null default now(),
@@ -139,3 +144,9 @@ create table if not exists templates (
 );
 
 create index if not exists templates_created_idx on templates (created_at desc);
+
+alter table templates add column if not exists logo_url text;
+alter table templates add column if not exists logo_position text default 'top-right';
+alter table templates add column if not exists logo_size integer default 120;
+alter table templates add column if not exists logo_opacity numeric default 1.0;
+alter table templates add column if not exists show_logo_backdrop boolean default false;

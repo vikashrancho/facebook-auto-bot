@@ -54,8 +54,18 @@ export default function TemplatesPage() {
     TEMPLATE_PRESETS[0].textElements
   );
 
+  // Brand Logo state
+  const [logoUrl, setLogoUrl] = useState<string>("");
+  const [logoPosition, setLogoPosition] = useState<
+    "top-left" | "top-right" | "top-center" | "bottom-left" | "bottom-right" | "bottom-center"
+  >("top-right");
+  const [logoSize, setLogoSize] = useState<number>(120);
+  const [logoOpacity, setLogoOpacity] = useState<number>(1.0);
+  const [showLogoBackdrop, setShowLogoBackdrop] = useState<boolean>(false);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
+
   // Studio tabs & UI state
-  const [activeTab, setActiveTab] = useState<"text" | "background" | "presets" | "saved">("text");
+  const [activeTab, setActiveTab] = useState<"text" | "background" | "logo" | "presets" | "saved">("text");
   const [viewMode, setViewMode] = useState<"canvas" | "feed">("canvas");
   const [savedTemplates, setSavedTemplates] = useState<PostTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -87,6 +97,11 @@ export default function TemplatesPage() {
   // Load initial templates & pages
   useEffect(() => {
     loadTemplates();
+    try {
+      const savedLogo = localStorage.getItem("facebook_bot_brand_logo");
+      if (savedLogo) setLogoUrl(savedLogo);
+    } catch {}
+
     fetch("/api/facebook/pages")
       .then((r) => r.json())
       .then((d) => {
@@ -241,6 +256,56 @@ export default function TemplatesPage() {
         ctx.restore();
       }
 
+      // 4. Draw Brand Logo (if uploaded)
+      if (logoUrl) {
+        const logoImg = new window.Image();
+        logoImg.crossOrigin = "anonymous";
+        logoImg.src = logoUrl;
+        await new Promise<void>((resolve) => {
+          logoImg.onload = () => {
+            ctx.save();
+            ctx.globalAlpha = logoOpacity;
+
+            const aspect = logoImg.width / logoImg.height;
+            const logoW = logoSize;
+            const logoH = logoSize / (aspect || 1);
+            const margin = 60;
+
+            let lx = margin;
+            let ly = margin;
+
+            if (logoPosition === "top-center") {
+              lx = (width - logoW) / 2;
+              ly = margin;
+            } else if (logoPosition === "top-right") {
+              lx = width - logoW - margin;
+              ly = margin;
+            } else if (logoPosition === "bottom-left") {
+              lx = margin;
+              ly = height - logoH - margin;
+            } else if (logoPosition === "bottom-center") {
+              lx = (width - logoW) / 2;
+              ly = height - logoH - margin;
+            } else if (logoPosition === "bottom-right") {
+              lx = width - logoW - margin;
+              ly = height - logoH - margin;
+            }
+
+            if (showLogoBackdrop) {
+              const pad = 14;
+              ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+              drawRoundedRect(ctx, lx - pad, ly - pad, logoW + pad * 2, logoH + pad * 2, 14);
+              ctx.fill();
+            }
+
+            ctx.drawImage(logoImg, lx, ly, logoW, logoH);
+            ctx.restore();
+            resolve();
+          };
+          logoImg.onerror = () => resolve();
+        });
+      }
+
       try {
         setCanvasDataUrl(canvas.toDataURL("image/png"));
       } catch {}
@@ -259,6 +324,11 @@ export default function TemplatesPage() {
     backgroundUrl,
     overlayOpacity,
     textElements,
+    logoUrl,
+    logoPosition,
+    logoSize,
+    logoOpacity,
+    showLogoBackdrop,
   ]);
 
   // Helper to draw CSS-like gradient on canvas
@@ -372,6 +442,28 @@ export default function TemplatesPage() {
     reader.readAsDataURL(file);
   }
 
+  // Handle brand logo upload
+  function handleLogoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      setError("Please select an image file (PNG with transparency recommended).");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const url = event.target?.result as string;
+      setLogoUrl(url);
+      try {
+        localStorage.setItem("facebook_bot_brand_logo", url);
+      } catch {}
+      setSuccess("Brand logo uploaded and applied!");
+    };
+    reader.readAsDataURL(file);
+  }
+
   // Load a preset template
   function applyTemplate(tpl: PostTemplate) {
     setSelectedRatio(tpl.ratio);
@@ -380,6 +472,11 @@ export default function TemplatesPage() {
     if (tpl.backgroundUrl) setBackgroundUrl(tpl.backgroundUrl);
     if (tpl.backgroundGradient) setBackgroundGradient(tpl.backgroundGradient);
     setOverlayOpacity(tpl.overlayOpacity);
+    if (tpl.logoUrl !== undefined) setLogoUrl(tpl.logoUrl);
+    if (tpl.logoPosition) setLogoPosition(tpl.logoPosition);
+    if (tpl.logoSize) setLogoSize(tpl.logoSize);
+    if (tpl.logoOpacity !== undefined) setLogoOpacity(tpl.logoOpacity);
+    if (tpl.showLogoBackdrop !== undefined) setShowLogoBackdrop(tpl.showLogoBackdrop);
     setTextElements(tpl.textElements.map((el) => ({ ...el })));
     setSuccess(`Loaded "${tpl.name}" template.`);
   }
@@ -425,6 +522,11 @@ export default function TemplatesPage() {
       backgroundUrl: backgroundType === "image" ? backgroundUrl : undefined,
       backgroundGradient: backgroundType === "gradient" ? backgroundGradient : undefined,
       overlayOpacity,
+      logoUrl: logoUrl || undefined,
+      logoPosition,
+      logoSize,
+      logoOpacity,
+      showLogoBackdrop,
       textElements,
       category: "My Templates",
     };
@@ -834,7 +936,7 @@ export default function TemplatesPage() {
         <div className="space-y-4">
           <Card className="p-4">
             {/* Tab switchers */}
-            <div className="grid grid-cols-4 gap-1 rounded-xl border border-border bg-surface-2/60 p-1 text-xs">
+            <div className="grid grid-cols-5 gap-1 rounded-xl border border-border bg-surface-2/60 p-1 text-xs">
               <button
                 type="button"
                 onClick={() => setActiveTab("text")}
@@ -857,7 +959,19 @@ export default function TemplatesPage() {
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                Background
+                Style
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("logo")}
+                className={cn(
+                  "cursor-pointer rounded-lg py-1.5 font-medium transition",
+                  activeTab === "logo"
+                    ? "bg-surface text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Logo
               </button>
               <button
                 type="button"
@@ -881,7 +995,7 @@ export default function TemplatesPage() {
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                Saved ({savedTemplates.length})
+                Saved
               </button>
             </div>
 
@@ -1117,6 +1231,173 @@ export default function TemplatesPage() {
                     ))}
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* TAB: BRAND LOGO */}
+            {activeTab === "logo" && (
+              <div className="mt-4 space-y-4">
+                <input
+                  type="file"
+                  ref={logoInputRef}
+                  accept="image/*"
+                  onChange={handleLogoUpload}
+                  className="hidden"
+                />
+
+                <div>
+                  <label className="text-xs font-semibold text-foreground">
+                    Upload Brand Logo
+                  </label>
+                  <p className="text-[11px] text-muted-foreground">
+                    Add your company or brand logo as a watermark on your post graphics.
+                  </p>
+
+                  {logoUrl ? (
+                    <div className="mt-3 flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-black/40 p-1.5 shadow-inner">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={logoUrl}
+                            alt="Brand Logo"
+                            className="max-h-full max-w-full object-contain"
+                          />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-semibold">Active Logo</h4>
+                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                            ✓ Placed on canvas
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => logoInputRef.current?.click()}
+                          className="h-7 text-[11px]"
+                        >
+                          Change
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => {
+                            setLogoUrl("");
+                            try {
+                              localStorage.removeItem("facebook_bot_brand_logo");
+                            } catch {}
+                            setSuccess("Logo removed.");
+                          }}
+                          className="h-7 px-2 text-[11px]"
+                        >
+                          <Trash size={13} />
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => logoInputRef.current?.click()}
+                      className="mt-2 flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface-2/40 p-5 transition hover:border-primary hover:bg-surface-2"
+                    >
+                      <UploadSimple size={24} className="text-muted-foreground" />
+                      <span className="mt-1 text-xs font-medium text-foreground">
+                        Click to upload brand logo
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        Recommended: PNG with transparent background
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {logoUrl && (
+                  <div className="space-y-4 pt-2">
+                    {/* Logo Position */}
+                    <div>
+                      <label className="text-xs font-semibold text-foreground">
+                        Logo Position
+                      </label>
+                      <div className="mt-1.5 grid grid-cols-3 gap-1.5 text-xs">
+                        {[
+                          { id: "top-left", label: "Top Left" },
+                          { id: "top-center", label: "Top Center" },
+                          { id: "top-right", label: "Top Right" },
+                          { id: "bottom-left", label: "Bottom Left" },
+                          { id: "bottom-center", label: "Bottom Center" },
+                          { id: "bottom-right", label: "Bottom Right" },
+                        ].map((pos) => (
+                          <button
+                            key={pos.id}
+                            type="button"
+                            onClick={() => setLogoPosition(pos.id as any)}
+                            className={cn(
+                              "cursor-pointer rounded-lg border py-2 text-center text-[11px] font-medium transition",
+                              logoPosition === pos.id
+                                ? "border-primary bg-primary/10 text-primary shadow-xs"
+                                : "border-border bg-surface text-muted-foreground hover:bg-surface-2 hover:text-foreground"
+                            )}
+                          >
+                            {pos.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Logo Size */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-foreground">Logo Size</span>
+                        <span className="font-mono text-muted-foreground">{logoSize}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="260"
+                        value={logoSize}
+                        onChange={(e) => setLogoSize(Number(e.target.value))}
+                        className="w-full accent-primary"
+                      />
+                    </div>
+
+                    {/* Logo Opacity */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-foreground">Logo Opacity</span>
+                        <span className="font-mono text-muted-foreground">
+                          {Math.round(logoOpacity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.2"
+                        max="1.0"
+                        step="0.05"
+                        value={logoOpacity}
+                        onChange={(e) => setLogoOpacity(Number(e.target.value))}
+                        className="w-full accent-primary"
+                      />
+                    </div>
+
+                    {/* Contrast Backdrop Card */}
+                    <div className="flex items-center justify-between rounded-xl border border-border bg-surface-2/40 p-3">
+                      <div>
+                        <h4 className="text-xs font-semibold">Contrast Backdrop</h4>
+                        <p className="text-[10px] text-muted-foreground">
+                          Subtle dark card behind the logo for clarity on bright images.
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={showLogoBackdrop}
+                        onChange={(e) => setShowLogoBackdrop(e.target.checked)}
+                        className="h-4 w-4 accent-primary cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

@@ -204,6 +204,11 @@ export interface PostTemplate {
   backgroundGradient?: string;
   backgroundColor?: string;
   overlayOpacity: number; // 0 to 1
+  logoUrl?: string;
+  logoPosition?: "top-left" | "top-right" | "top-center" | "bottom-left" | "bottom-right" | "bottom-center";
+  logoSize?: number;
+  logoOpacity?: number;
+  showLogoBackdrop?: boolean;
   textElements: TemplateTextElement[];
   category?: string;
   created_at?: string;
