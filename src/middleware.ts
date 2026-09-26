@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth/session";
 
-export async function proxy(req: NextRequest) {
+export async function middleware(req: NextRequest) {
   const token = req.cookies.get(SESSION_COOKIE)?.value;
   const authed = await verifySessionToken(token);
 
@@ -28,6 +28,6 @@ export async function proxy(req: NextRequest) {
 export const config = {
   // Everything except static assets, images, and the API's own auth routes
   // (login/logout must stay reachable to establish/clear the session, and
-  // the cron + pinterest-oauth-callback routes authenticate themselves).
+  // the cron + oauth-callback routes authenticate themselves).
   matcher: ["/((?!_next/static|_next/image|favicon.ico|api/).*)"],
 };
