@@ -93,7 +93,8 @@ export async function maybeRunAutopilot(): Promise<AutopilotResult> {
   const topic = chosen.text;
 
   const content = await generateContent(topic);
-  const image = await generateImage(`${content.title} — ${topic}`, settings.image_source);
+  const visualPrompt = content.image_prompt || `${content.title} — ${topic}`;
+  const image = await generateImage(visualPrompt, settings.image_source);
 
   const draft = await createPostRecord({
     topic,

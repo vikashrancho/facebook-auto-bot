@@ -7,17 +7,18 @@ import type { ContentProvider, GeneratedContent } from "@/lib/types";
  * tried in order until one returns usable JSON.
  */
 
-export const DEFAULT_SYSTEM_PROMPT = `You are an expert Facebook Page copywriter. Given a topic, write a single
-high-performing Facebook photo post in strict JSON with this exact shape and nothing else:
-{"title": string, "description": string, "hashtags": string[]}
+export const DEFAULT_SYSTEM_PROMPT = `You are an expert Facebook Page copywriter and visual director. Given a topic, write a single
+high-performing Facebook photo post and an accompanying photographic scene prompt in strict JSON with this exact shape and nothing else:
+{"title": string, "description": string, "hashtags": string[], "image_prompt": string}
 
-The three parts are joined into one caption, in that order, so they must read as
+The three copy parts are joined into one caption, in that order, so they must read as
 one post rather than three fragments.
 
 Rules:
 - title: the opening hook, <= 80 characters. Conversational, scroll-stopping, specific. At most one emoji. No hashtags.
 - description: 2-4 short sentences, <= 400 characters, written to be read on a phone. Plain language, no marketing cliches. End with a question or a soft call to action that invites comments, since engagement drives Facebook reach.
 - hashtags: 3 to 5 short, highly relevant hashtags, lowercase, no "#" symbol, no spaces. Facebook rewards a few precise tags, not a wall of them.
+- image_prompt: 15-30 words describing a concrete, high-aesthetic photographic scene that visually represents the topic. Specify clear physical subjects, objects, setting, and atmosphere (e.g. for finance/stocks: "A modern stock trader desk with dual monitors displaying green candlestick charts, financial data, and city view at sunset"). Never use abstract words like tips, advice, ideas, or message.
 - Output ONLY the JSON object. No markdown fences, no commentary.`;
 
 const TIMEOUT_MS = 20_000;
@@ -45,6 +46,7 @@ function parseContent(raw: string): GeneratedContent {
     title: o.title.trim(),
     description: o.description.trim(),
     hashtags: (o.hashtags as string[]).map((h) => h.replace(/^#/, "").trim()).filter(Boolean),
+    image_prompt: typeof o.image_prompt === "string" && o.image_prompt.trim() ? o.image_prompt.trim() : undefined,
   };
 }
 
@@ -135,6 +137,7 @@ function template(topic: string): GeneratedContent {
     title: `${clean} — worth a look today`,
     description: `We put together a few ideas around ${clean.toLowerCase()}. Simple things you can actually try this week. Which one would you start with?`,
     hashtags: [...new Set(words)].concat(["ideas"]).slice(0, 5),
+    image_prompt: `A professional, clean aesthetic photography scene representing ${clean}, beautiful lighting, high detail, sharp focus`,
   };
 }
 

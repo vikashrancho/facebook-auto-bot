@@ -170,7 +170,7 @@ export default function SystemPromptPage() {
           </p>
         </div>
         <Link href="/dashboard/generate">
-          <Button variant="outline" size="sm" className="gap-2">
+          <Button variant="secondary" size="sm" className="gap-2">
             <Sparkle size={16} />
             Test in Generator
           </Button>
@@ -251,11 +251,11 @@ export default function SystemPromptPage() {
                   </div>
                   <div>
                     <h3 className="text-sm font-semibold">Google Gemini</h3>
-                    <p className="text-xs text-muted-foreground">gemini-2.0-flash</p>
+                    <p className="text-xs text-muted-foreground">gemini-3.8-flash</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={geminiConfigured ? "default" : "secondary"}>
+                  <Badge className={geminiConfigured ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : ""}>
                     {geminiConfigured ? "Configured" : "No Key"}
                   </Badge>
                   <button
@@ -314,7 +314,7 @@ export default function SystemPromptPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={groqConfigured ? "default" : "secondary"}>
+                  <Badge className={groqConfigured ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : ""}>
                     {groqConfigured ? "Configured" : "No Key"}
                   </Badge>
                   <button
@@ -373,7 +373,7 @@ export default function SystemPromptPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={openaiConfigured ? "default" : "secondary"}>
+                  <Badge className={openaiConfigured ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : ""}>
                     {openaiConfigured ? "Configured" : "No Key"}
                   </Badge>
                   <button
@@ -432,7 +432,7 @@ export default function SystemPromptPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge variant={openrouterConfigured ? "default" : "secondary"}>
+                  <Badge className={openrouterConfigured ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : ""}>
                     {openrouterConfigured ? "Configured" : "No Key"}
                   </Badge>
                   <button
@@ -496,7 +496,7 @@ export default function SystemPromptPage() {
             </p>
           </div>
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             onClick={handleResetPrompt}
             className="gap-2 text-xs text-muted-foreground hover:text-foreground"

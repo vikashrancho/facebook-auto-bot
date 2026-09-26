@@ -100,6 +100,7 @@ export interface GeneratedContent {
   title: string;
   description: string;
   hashtags: string[];
+  image_prompt?: string;
   provider?: ContentProvider;
   /** First provider failure, surfaced so a degraded draft can explain itself. */
   providerError?: string;
