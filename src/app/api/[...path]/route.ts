@@ -7,7 +7,7 @@ import {
   sessionCookieOptions,
   verifySessionToken,
 } from "@/lib/auth/session";
-import { generateContent } from "@/lib/ai/text";
+import { generateContent, DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/text";
 import { generateImage } from "@/lib/ai/image";
 import { getTrendingTopics } from "@/lib/trends";
 import {
@@ -123,11 +123,30 @@ async function safely(handler: () => Promise<Response>): Promise<Response> {
   }
 }
 
-/** Tokens must never reach the browser, so they are stripped in one place. */
+/** Tokens and API keys must never reach the browser, so they are stripped in one place. */
 async function publicSettings(settings: Awaited<ReturnType<typeof getSettings>>) {
-  const { facebook_user_token, default_page_token, facebook_app_secret, ...safe } = settings;
+  const {
+    facebook_user_token,
+    default_page_token,
+    facebook_app_secret,
+    gemini_api_key,
+    groq_api_key,
+    openai_api_key,
+    openrouter_api_key,
+    ...safe
+  } = settings;
   return {
     ...safe,
+    system_prompt: settings.system_prompt || DEFAULT_SYSTEM_PROMPT,
+    ai_provider: settings.ai_provider || "auto",
+    gemini_configured: Boolean(gemini_api_key || env.geminiApiKey),
+    groq_configured: Boolean(groq_api_key || env.groqApiKey),
+    openai_configured: Boolean(openai_api_key || env.openaiApiKey),
+    openrouter_configured: Boolean(openrouter_api_key || env.openrouterApiKey),
+    gemini_enabled: settings.gemini_enabled ?? true,
+    groq_enabled: settings.groq_enabled ?? true,
+    openai_enabled: settings.openai_enabled ?? false,
+    openrouter_enabled: settings.openrouter_enabled ?? false,
     // The App ID is public (it travels in the OAuth URL); the secret never
     // leaves the server, so the UI only learns whether one is stored.
     facebook_app_secret_set: Boolean(facebook_app_secret),
@@ -222,7 +241,10 @@ export async function GET(req: Request, ctx: Ctx) {
 
 const LoginBody = z.object({ password: z.string() });
 
-const ContentBody = z.object({ topic: z.string().trim().min(2).max(200) });
+const ContentBody = z.object({
+  topic: z.string().trim().min(2).max(200),
+  prompt: z.string().max(4000).optional(),
+});
 
 const ImageBody = z.object({
   prompt: z.string().trim().min(2).max(300),
@@ -288,7 +310,7 @@ export async function POST(req: Request, ctx: Ctx) {
     if (route === "generate/content") {
       const parsed = ContentBody.safeParse(await req.json().catch(() => null));
       if (!parsed.success) return json({ error: "A topic (2-200 characters) is required." }, 400);
-      return json(await generateContent(parsed.data.topic));
+      return json(await generateContent(parsed.data.topic, parsed.data.prompt));
     }
 
     if (route === "generate/image") {
@@ -430,6 +452,16 @@ const SettingsBody = z.object({
   posting_hours: z.array(z.number().int().min(0).max(23)).min(1).max(24).optional(),
   timezone: z.string().min(1).max(64).optional(),
   topic_source: z.enum(["mine", "trending", "mixed"]).optional(),
+  system_prompt: z.string().max(4000).nullable().optional(),
+  ai_provider: z.enum(["gemini", "groq", "openai", "openrouter", "auto"]).optional(),
+  gemini_api_key: z.string().trim().nullable().optional(),
+  groq_api_key: z.string().trim().nullable().optional(),
+  openai_api_key: z.string().trim().nullable().optional(),
+  openrouter_api_key: z.string().trim().nullable().optional(),
+  gemini_enabled: z.boolean().optional(),
+  groq_enabled: z.boolean().optional(),
+  openai_enabled: z.boolean().optional(),
+  openrouter_enabled: z.boolean().optional(),
 });
 
 const UpdateTopicBody = z.object({
@@ -465,8 +497,8 @@ export async function PATCH(req: Request, ctx: Ctx) {
       } catch (err) {
         // Installs made before topics existed lack the column until
         // schema.sql is run again.
-        if (err instanceof Error && /topic_source/.test(err.message)) {
-          return json({ error: new TopicsTableMissingError().message }, 409);
+        if (err instanceof Error && (/topic_source/.test(err.message) || /system_prompt|ai_provider|gemini_api_key/.test(err.message))) {
+          return json({ error: "Database needs migration. Please run the SQL migration script in Supabase SQL Editor." }, 409);
         }
         throw err;
       }

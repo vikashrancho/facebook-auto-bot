@@ -12,6 +12,8 @@ import {
   Key,
   Copy,
   Check,
+  SlidersHorizontal,
+  Sparkle,
 } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -421,6 +423,27 @@ function SettingsForm() {
               </div>
             )}
           </div>
+        </div>
+      </Card>
+
+      {/* System Prompt & AI Models */}
+      <Card>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkle size={18} weight="fill" className="text-primary" />
+              <h2 className="font-heading font-bold text-foreground">System Prompt &amp; AI Engine</h2>
+            </div>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              Customize post copywriting instructions and manage API keys for Gemini, Groq, OpenAI, and OpenRouter.
+            </p>
+          </div>
+          <Link href="/dashboard/system-prompt">
+            <Button className="gap-2 shrink-0">
+              <SlidersHorizontal size={16} />
+              System Prompt &amp; AI Keys
+            </Button>
+          </Link>
         </div>
       </Card>
 

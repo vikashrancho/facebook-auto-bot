@@ -46,6 +46,18 @@ export interface AppSettings {
   last_auto_post_at: string | null;
   /** Absent on databases created before topics existed; treat as "mine". */
   topic_source?: TopicSource;
+  /** Custom system prompt for copywriting. Defaults to internal prompt if null. */
+  system_prompt?: string | null;
+  /** Active AI provider or auto-fallback */
+  ai_provider?: "gemini" | "groq" | "openai" | "openrouter" | "auto";
+  gemini_api_key?: string | null;
+  groq_api_key?: string | null;
+  openai_api_key?: string | null;
+  openrouter_api_key?: string | null;
+  gemini_enabled?: boolean;
+  groq_enabled?: boolean;
+  openai_enabled?: boolean;
+  openrouter_enabled?: boolean;
   updated_at: string;
 }
 
@@ -75,9 +87,14 @@ export interface PageCache {
   fetched_at: string;
 }
 
-/** Which free service actually wrote the copy. "template" means every AI
- *  provider was unreachable and the deterministic fallback was used. */
-export type ContentProvider = "groq" | "gemini" | "pollinations" | "template";
+/** Which service wrote the copy. "template" means every provider was unreachable. */
+export type ContentProvider =
+  | "gemini"
+  | "groq"
+  | "openai"
+  | "openrouter"
+  | "pollinations"
+  | "template";
 
 export interface GeneratedContent {
   title: string;

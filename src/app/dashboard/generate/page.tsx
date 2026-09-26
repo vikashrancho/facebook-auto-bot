@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import {
   Sparkle,
+  SlidersHorizontal,
   ArrowClockwise,
   FloppyDisk,
   Rocket,
@@ -201,10 +202,20 @@ export default function GeneratePage() {
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <Card>
-        <label className="text-sm font-semibold text-foreground">Topic</label>
-        <p className="mt-1 text-sm text-muted-foreground">
-          What should this post be about? Be specific for better results.
-        </p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <label className="text-sm font-semibold text-foreground">Topic</label>
+            <p className="mt-1 text-sm text-muted-foreground">
+              What should this post be about? Be specific for better results.
+            </p>
+          </div>
+          <Link href="/dashboard/system-prompt">
+            <Button variant="outline" size="sm" className="gap-2 text-xs">
+              <SlidersHorizontal size={14} />
+              System Prompt
+            </Button>
+          </Link>
+        </div>
         <div className="mt-3 flex flex-col gap-3 sm:flex-row">
           <input
             value={topic}

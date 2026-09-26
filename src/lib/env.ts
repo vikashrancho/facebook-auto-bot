@@ -61,6 +61,12 @@ export const env = {
   get geminiApiKey() {
     return optional("GEMINI_API_KEY");
   },
+  get openaiApiKey() {
+    return optional("OPENAI_API_KEY");
+  },
+  get openrouterApiKey() {
+    return optional("OPENROUTER_API_KEY");
+  },
 
   // Free image sources
   get pexelsApiKey() {

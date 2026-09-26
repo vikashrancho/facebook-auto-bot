@@ -1,21 +1,13 @@
 import { env } from "@/lib/env";
+import { getSettings } from "@/lib/db/settings";
 import type { ContentProvider, GeneratedContent } from "@/lib/types";
 
 /**
- * Facebook copy generation across free LLM providers, tried in order until
- * one returns usable JSON.
- *
- * Pollinations is the only keyless option, but its text endpoint now answers
- * `402 Payment Required` for anonymous callers — inside a 200 response body,
- * so the status alone does not reveal it. Groq and Gemini both have free tiers
- * that need nothing but a no-cost API key, so they are preferred whenever one
- * is configured. If every provider fails the caller still gets a postable
- * draft from a deterministic template, but the result says so via `provider`:
- * silently shipping template copy as if it were AI copy is worse than an
- * honest warning.
+ * Facebook copy generation across LLM providers (Gemini, Groq, OpenAI, OpenRouter, Pollinations),
+ * tried in order until one returns usable JSON.
  */
 
-const SYSTEM_PROMPT = `You are an expert Facebook Page copywriter. Given a topic, write a single
+export const DEFAULT_SYSTEM_PROMPT = `You are an expert Facebook Page copywriter. Given a topic, write a single
 high-performing Facebook photo post in strict JSON with this exact shape and nothing else:
 {"title": string, "description": string, "hashtags": string[]}
 
@@ -56,24 +48,29 @@ function parseContent(raw: string): GeneratedContent {
   };
 }
 
-/** Shared call shape for the OpenAI-compatible endpoints (Pollinations, Groq). */
+/** Shared call shape for OpenAI-compatible endpoints (Groq, OpenAI, OpenRouter, Pollinations). */
 async function chatCompletion(
   url: string,
   model: string,
   topic: string,
-  apiKey?: string
+  systemPrompt: string,
+  apiKey?: string,
+  extraHeaders?: Record<string, string>,
+  responseFormatJson?: boolean
 ): Promise<string> {
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...(extraHeaders ?? {}),
     },
     body: JSON.stringify({
       model,
       temperature: 0.9,
+      ...(responseFormatJson ? { response_format: { type: "json_object" } } : {}),
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: systemPrompt },
         { role: "user", content: `Topic: ${topic}` },
       ],
     }),
@@ -82,11 +79,9 @@ async function chatCompletion(
 
   const host = new URL(url).host;
   const body = await res.text();
-  if (!res.ok) throw new Error(`${host} responded ${res.status}`);
+  if (!res.ok) throw new Error(`${host} responded ${res.status}: ${body.slice(0, 150)}`);
 
   const data = JSON.parse(body);
-  // Pollinations returns quota errors with a 200 status, so the body has to be
-  // inspected rather than trusting res.ok.
   if (data?.error) {
     const message = typeof data.error === "string" ? data.error : data.error?.message;
     throw new Error(`${host}: ${message ?? "unknown error"}`);
@@ -97,14 +92,14 @@ async function chatCompletion(
   return content;
 }
 
-async function geminiCompletion(topic: string, apiKey: string): Promise<string> {
+async function geminiCompletion(topic: string, apiKey: string, systemPrompt: string): Promise<string> {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: systemPrompt }] },
         contents: [{ role: "user", parts: [{ text: `Topic: ${topic}` }] }],
         generationConfig: { temperature: 0.9, responseMimeType: "application/json" },
       }),
@@ -112,7 +107,10 @@ async function geminiCompletion(topic: string, apiKey: string): Promise<string> 
     }
   );
 
-  if (!res.ok) throw new Error(`gemini responded ${res.status}`);
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`gemini responded ${res.status}: ${errText.slice(0, 150)}`);
+  }
   const data = await res.json();
   const content: unknown = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (typeof content !== "string" || !content.trim()) throw new Error("Empty completion");
@@ -131,41 +129,138 @@ function template(topic: string): GeneratedContent {
 
 type Attempt = { provider: ContentProvider; run: () => Promise<string> };
 
-function providerChain(topic: string): Attempt[] {
+async function buildProviderChain(topic: string, customPrompt?: string): Promise<Attempt[]> {
   const chain: Attempt[] = [];
 
-  // A configured free-tier key beats the keyless service on both quality and
-  // reliability, so those go first whenever one is present.
-  // Groq retires model ids without notice (llama-3.3-70b-versatile vanished
-  // mid-build), so try a short list rather than pinning a single name.
-  const groqKey = env.groqApiKey;
-  if (groqKey) {
-    for (const model of ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]) {
-      chain.push({
-        provider: "groq",
-        run: () =>
-          chatCompletion("https://api.groq.com/openai/v1/chat/completions", model, topic, groqKey),
-      });
-    }
-  }
+  let settings = null;
+  try {
+    settings = await getSettings();
+  } catch {}
 
-  const geminiKey = env.geminiApiKey;
-  if (geminiKey) {
-    chain.push({ provider: "gemini", run: () => geminiCompletion(topic, geminiKey) });
-  }
+  const systemPrompt = customPrompt || settings?.system_prompt || DEFAULT_SYSTEM_PROMPT;
 
-  chain.push({
+  const geminiKey = settings?.gemini_api_key || env.geminiApiKey;
+  const groqKey = settings?.groq_api_key || env.groqApiKey;
+  const openaiKey = settings?.openai_api_key || env.openaiApiKey;
+  const openrouterKey = settings?.openrouter_api_key || env.openrouterApiKey;
+
+  const geminiEnabled = settings?.gemini_enabled ?? Boolean(geminiKey);
+  const groqEnabled = settings?.groq_enabled ?? Boolean(groqKey);
+  const openaiEnabled = settings?.openai_enabled ?? Boolean(openaiKey);
+  const openrouterEnabled = settings?.openrouter_enabled ?? Boolean(openrouterKey);
+
+  const selectedProvider = settings?.ai_provider || "auto";
+
+  // Provider Runners
+  const geminiAttempt: Attempt = {
+    provider: "gemini",
+    run: () => geminiCompletion(topic, geminiKey, systemPrompt),
+  };
+
+  const groqAttempt: Attempt = {
+    provider: "groq",
+    run: async () => {
+      const models = ["llama-3.3-70b-versatile", "qwen/qwen3.8-27b", "openai/gpt-oss-120b"];
+      let lastErr: Error | null = null;
+      for (const model of models) {
+        try {
+          return await chatCompletion(
+            "https://api.groq.com/openai/v1/chat/completions",
+            model,
+            topic,
+            systemPrompt,
+            groqKey,
+            undefined,
+            true
+          );
+        } catch (e) {
+          lastErr = e instanceof Error ? e : new Error(String(e));
+        }
+      }
+      throw lastErr ?? new Error("Groq failed for all models");
+    },
+  };
+
+  const openaiAttempt: Attempt = {
+    provider: "openai",
+    run: () =>
+      chatCompletion(
+        "https://api.openai.com/v1/chat/completions",
+        "gpt-4o-mini",
+        topic,
+        systemPrompt,
+        openaiKey,
+        undefined,
+        true
+      ),
+  };
+
+  const openrouterAttempt: Attempt = {
+    provider: "openrouter",
+    run: () =>
+      chatCompletion(
+        "https://openrouter.ai/api/v1/chat/completions",
+        "meta-llama/llama-3.3-70b-instruct",
+        topic,
+        systemPrompt,
+        openrouterKey,
+        {
+          "HTTP-Referer": "http://localhost:3000",
+          "X-Title": "Facebook Auto Bot",
+        }
+      ),
+  };
+
+  const pollinationsAttempt: Attempt = {
     provider: "pollinations",
-    run: () => chatCompletion("https://text.pollinations.ai/openai", "openai-fast", topic),
-  });
+    run: () =>
+      chatCompletion(
+        "https://text.pollinations.ai/openai",
+        "openai-fast",
+        topic,
+        systemPrompt
+      ),
+  };
+
+  // If a specific provider was chosen by user
+  if (selectedProvider === "gemini" && geminiKey && geminiEnabled) {
+    chain.push(geminiAttempt);
+  } else if (selectedProvider === "groq" && groqKey && groqEnabled) {
+    chain.push(groqAttempt);
+  } else if (selectedProvider === "openai" && openaiKey && openaiEnabled) {
+    chain.push(openaiAttempt);
+  } else if (selectedProvider === "openrouter" && openrouterKey && openrouterEnabled) {
+    chain.push(openrouterAttempt);
+  }
+
+  // Next, if "auto" or as fallbacks:
+  if (geminiKey && geminiEnabled && !chain.includes(geminiAttempt)) {
+    chain.push(geminiAttempt);
+  }
+  if (groqKey && groqEnabled && !chain.includes(groqAttempt)) {
+    chain.push(groqAttempt);
+  }
+  if (openaiKey && openaiEnabled && !chain.includes(openaiAttempt)) {
+    chain.push(openaiAttempt);
+  }
+  if (openrouterKey && openrouterEnabled && !chain.includes(openrouterAttempt)) {
+    chain.push(openrouterAttempt);
+  }
+
+  // Free community fallback
+  chain.push(pollinationsAttempt);
 
   return chain;
 }
 
-export async function generateContent(topic: string): Promise<GeneratedContent> {
+export async function generateContent(
+  topic: string,
+  customPrompt?: string
+): Promise<GeneratedContent> {
   const failures: string[] = [];
+  const chain = await buildProviderChain(topic, customPrompt);
 
-  for (const { provider, run } of providerChain(topic)) {
+  for (const { provider, run } of chain) {
     try {
       return { ...parseContent(await run()), provider };
     } catch (err) {
