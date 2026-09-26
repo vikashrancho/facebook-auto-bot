@@ -93,28 +93,39 @@ async function chatCompletion(
 }
 
 async function geminiCompletion(topic: string, apiKey: string, systemPrompt: string): Promise<string> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: `Topic: ${topic}` }] }],
-        generationConfig: { temperature: 0.9, responseMimeType: "application/json" },
-      }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    }
-  );
+  const models = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash"];
+  let lastErr: Error | null = null;
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`gemini responded ${res.status}: ${errText.slice(0, 150)}`);
+  for (const model of models) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: "user", parts: [{ text: `Topic: ${topic}` }] }],
+            generationConfig: { temperature: 0.9, responseMimeType: "application/json" },
+          }),
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        }
+      );
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`${model} responded ${res.status}: ${errText.slice(0, 150)}`);
+      }
+      const data = await res.json();
+      const content: unknown = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof content !== "string" || !content.trim()) throw new Error("Empty completion");
+      return content;
+    } catch (e) {
+      lastErr = e instanceof Error ? e : new Error(String(e));
+    }
   }
-  const data = await res.json();
-  const content: unknown = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (typeof content !== "string" || !content.trim()) throw new Error("Empty completion");
-  return content;
+
+  throw lastErr ?? new Error("Gemini failed for all models");
 }
 
 function template(topic: string): GeneratedContent {
