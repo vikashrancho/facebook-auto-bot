@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   House,
   MagicWand,
+  ImageSquare,
   Lightbulb,
   SlidersHorizontal,
   ClockCountdown,
@@ -24,6 +25,7 @@ import { cn } from "@/lib/cn";
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: House },
   { href: "/dashboard/generate", label: "Generate", icon: MagicWand },
+  { href: "/dashboard/templates", label: "Templates", icon: ImageSquare },
   { href: "/dashboard/topics", label: "Topics", icon: Lightbulb },
   { href: "/dashboard/system-prompt", label: "System Prompt", icon: SlidersHorizontal },
   { href: "/dashboard/queue", label: "Queue", icon: ClockCountdown },
@@ -35,6 +37,7 @@ const NAV = [
 const TITLES: Record<string, string> = {
   "/dashboard": "Overview",
   "/dashboard/generate": "Generate a post",
+  "/dashboard/templates": "Post Templates & Canvas",
   "/dashboard/topics": "Topics",
   "/dashboard/system-prompt": "System Prompt & AI Models",
   "/dashboard/queue": "Queue",

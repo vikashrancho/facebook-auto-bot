@@ -19,6 +19,8 @@ import {
   updatePostRecord,
 } from "@/lib/db/posts";
 import { getSettings, updateSettings } from "@/lib/db/settings";
+import { listTemplates, saveTemplate, deleteTemplate } from "@/lib/db/templates";
+import { TEMPLATE_PRESETS } from "@/lib/templates/presets";
 import {
   addTopics,
   deleteTopic,
@@ -201,6 +203,11 @@ export async function GET(req: Request, ctx: Ctx) {
         }
         throw err;
       }
+    }
+
+    if (route === "templates") {
+      const userTemplates = await listTemplates();
+      return json({ templates: [...userTemplates, ...TEMPLATE_PRESETS] });
     }
 
     if (route === "facebook/oauth/start") {
@@ -425,6 +432,48 @@ export async function POST(req: Request, ctx: Ctx) {
       return json({ ok: true });
     }
 
+    if (route === "templates") {
+      const body = await req.json().catch(() => null);
+      if (!body || !body.name || !body.ratio) {
+        return json({ error: "Template name and ratio are required." }, 400);
+      }
+      try {
+        const saved = await saveTemplate(body);
+        return json({ template: saved });
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : "Failed to save template." }, 500);
+      }
+    }
+
+    if (route === "upload/image") {
+      const body = await req.json().catch(() => null);
+      if (!body?.dataUrl) {
+        return json({ error: "dataUrl is required." }, 400);
+      }
+      const matches = (body.dataUrl as string).match(/^data:([A-Za-z0-9-+/]+);base64,(.+)$/);
+      if (!matches || matches.length !== 3) {
+        return json({ error: "Invalid dataUrl format." }, 400);
+      }
+      const contentType = matches[1];
+      const buffer = Buffer.from(matches[2], "base64");
+      const ext = contentType.includes("png")
+        ? "png"
+        : contentType.includes("webp")
+          ? "webp"
+          : "jpg";
+      const path = `templates/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}.${ext}`;
+
+      const db = supabaseAdmin();
+      const { error } = await db.storage.from("post-images").upload(path, buffer, {
+        contentType,
+        upsert: false,
+      });
+      if (error) throw new Error(`Storage upload failed: ${error.message}`);
+
+      const { data } = db.storage.from("post-images").getPublicUrl(path);
+      return json({ url: data.publicUrl });
+    }
+
     if (route === "facebook/disconnect") {
       await updateSettings({
         facebook_user_token: null,
@@ -560,6 +609,11 @@ export async function DELETE(req: Request, ctx: Ctx) {
 
     if (path.length === 2 && path[0] === "topics") {
       await deleteTopic(path[1]);
+      return json({ ok: true });
+    }
+
+    if (path.length === 2 && path[0] === "templates") {
+      await deleteTemplate(path[1]);
       return json({ ok: true });
     }
     return notFound();

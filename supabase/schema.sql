@@ -119,3 +119,23 @@ alter table app_settings add column if not exists gemini_enabled boolean not nul
 alter table app_settings add column if not exists groq_enabled boolean not null default true;
 alter table app_settings add column if not exists openai_enabled boolean not null default false;
 alter table app_settings add column if not exists openrouter_enabled boolean not null default false;
+
+-- Custom Facebook post templates & canvas layouts
+create table if not exists templates (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  ratio text not null default '1:1', -- '1:1' | '4:5' | '1.91:1' | '9:16'
+  width integer not null default 1200,
+  height integer not null default 1200,
+  background_type text not null default 'gradient', -- 'image' | 'gradient' | 'color'
+  background_url text,
+  background_gradient text,
+  background_color text,
+  overlay_opacity numeric not null default 0.2,
+  text_elements jsonb not null default '[]'::jsonb,
+  category text default 'Custom',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists templates_created_idx on templates (created_at desc);

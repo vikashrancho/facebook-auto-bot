@@ -129,3 +129,82 @@ export function composeMessage(
     .filter(Boolean)
     .join("\n\n");
 }
+
+/* -------------------------------------------------- Facebook Post Templates */
+
+export type FacebookAspectRatio = "1:1" | "4:5" | "1.91:1" | "9:16";
+
+export interface AspectRatioConfig {
+  id: FacebookAspectRatio;
+  label: string;
+  sublabel: string;
+  width: number;
+  height: number;
+  description: string;
+}
+
+export const FACEBOOK_ASPECT_RATIOS: Record<FacebookAspectRatio, AspectRatioConfig> = {
+  "1:1": {
+    id: "1:1",
+    label: "Square",
+    sublabel: "1200 × 1200",
+    width: 1200,
+    height: 1200,
+    description: "Standard Facebook Feed. Perfectly balanced for desktop & mobile feeds.",
+  },
+  "4:5": {
+    id: "4:5",
+    label: "Portrait",
+    sublabel: "1080 × 1350",
+    width: 1080,
+    height: 1350,
+    description: "Vertical Feed Post. Maximizes vertical screen presence on mobile.",
+  },
+  "1.91:1": {
+    id: "1.91:1",
+    label: "Landscape",
+    sublabel: "1200 × 630",
+    width: 1200,
+    height: 630,
+    description: "Horizontal Banner. Ideal for link shares, events & news announcements.",
+  },
+  "9:16": {
+    id: "9:16",
+    label: "Story / Reel",
+    sublabel: "1080 × 1920",
+    width: 1080,
+    height: 1920,
+    description: "Full-screen vertical format for Facebook Stories and Reels.",
+  },
+};
+
+export interface TemplateTextElement {
+  id: string;
+  type: "badge" | "headline" | "subtext" | "footer" | "custom";
+  text: string;
+  fontSize: number; // in px at base canvas scale
+  fontWeight: "normal" | "600" | "bold" | "800";
+  fontFamily: "Inter" | "Montserrat" | "Merriweather" | "Impact" | "Outfit";
+  color: string;
+  align: "left" | "center" | "right";
+  yOffset: number; // percentage from top (0 - 100)
+  showBackgroundPill?: boolean;
+  pillColor?: string;
+  pillOpacity?: number;
+}
+
+export interface PostTemplate {
+  id: string;
+  name: string;
+  ratio: FacebookAspectRatio;
+  width: number;
+  height: number;
+  backgroundType: "image" | "gradient" | "color";
+  backgroundUrl?: string;
+  backgroundGradient?: string;
+  backgroundColor?: string;
+  overlayOpacity: number; // 0 to 1
+  textElements: TemplateTextElement[];
+  category?: string;
+  created_at?: string;
+}
