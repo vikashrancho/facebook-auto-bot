@@ -409,8 +409,8 @@
             "type": "string",
             "format": "uri",
             "minLength": 1,
-            "description": "Public HTTPS URL of an image from an approved OpenAI/DALL-E domain (e.g. files.oaiusercontent.com, oaidalleapiprodscus.blob.core.windows.net). Cannot be empty.",
-            "example": "https://files.oaiusercontent.com/file-sample-image.png"
+            "description": "Public HTTPS URL of an image from an approved OpenAI/DALL-E domain or the app's Supabase storage. Cannot be empty.",
+            "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/2026-10-09/7122985f-11b1-49ce-9824-512b7e1ebe9c.jpg"
           },
           "idempotencyKey": {
             "type": "string",

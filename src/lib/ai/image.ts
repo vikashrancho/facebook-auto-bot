@@ -124,11 +124,19 @@ export const ALLOWED_IMAGE_DOMAINS = new Set([
 
 export function isImageHostAllowed(hostname: string): boolean {
   const norm = hostname.toLowerCase();
+  let supabaseHost = "";
+  try {
+    supabaseHost = new URL(env.supabaseUrl).hostname.toLowerCase();
+  } catch {}
   const extraDomains = (process.env.ALLOWED_IMAGE_DOMAINS || "")
     .split(",")
     .map((d) => d.trim().toLowerCase())
     .filter(Boolean);
-  const allowlist = new Set([...ALLOWED_IMAGE_DOMAINS, ...extraDomains]);
+  const allowlist = new Set([
+    ...ALLOWED_IMAGE_DOMAINS,
+    ...(supabaseHost ? [supabaseHost] : []),
+    ...extraDomains,
+  ]);
   return allowlist.has(norm);
 }
 
