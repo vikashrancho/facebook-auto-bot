@@ -831,7 +831,7 @@ async function runTests() {
     assert.ok(parsed.components?.securitySchemes?.bearerAuth);
   });
 
-  await test("public/openapi.json server URL is clearly marked as a placeholder", () => {
+  await test("public/openapi.json server URL is configured with HTTPS domain or placeholder", () => {
     const filePath = path.resolve("./public/openapi.json");
     const content = fs.readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(content);
@@ -840,13 +840,15 @@ async function runTests() {
     const serverDesc = parsed.servers[0].description.toLowerCase();
     const serverUrl = parsed.servers[0].url.toLowerCase();
 
+    const isPlaceholder =
+      (serverDesc.includes("placeholder") || serverDesc.includes("replace with your actual")) &&
+      (serverUrl.includes("your_deployed_domain") || serverUrl.includes("your-deployment"));
+    const isConfiguredHttps =
+      serverUrl.startsWith("https://") && !serverUrl.includes("localhost");
+
     assert.ok(
-      serverDesc.includes("placeholder") || serverDesc.includes("replace with your actual"),
-      "Server description must clearly state it is a placeholder"
-    );
-    assert.ok(
-      serverUrl.includes("your_deployed_domain") || serverUrl.includes("your-deployment"),
-      "Server URL must use an obvious placeholder domain"
+      isPlaceholder || isConfiguredHttps,
+      "Server URL must either use an obvious placeholder domain or a configured HTTPS production domain"
     );
   });
 

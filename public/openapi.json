@@ -7,8 +7,8 @@
   },
   "servers": [
     {
-      "url": "https://YOUR_DEPLOYED_DOMAIN.vercel.app",
-      "description": "Placeholder — replace with your actual deployed Vercel HTTPS domain when deployed"
+      "url": "https://fbautopost.vetechno.in",
+      "description": "Production server (Vercel)"
     }
   ],
   "security": [
