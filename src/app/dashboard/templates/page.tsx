@@ -25,6 +25,12 @@ import {
   ThumbsUp,
   ChatCircle,
   ShareFat,
+  Copy,
+  TextAlignLeft,
+  TextAlignCenter,
+  TextAlignRight,
+  CaretUp,
+  CaretDown,
 } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,11 +40,55 @@ import {
   type FacebookAspectRatio,
   type PostTemplate,
   type TemplateTextElement,
+  type TemplateFontFamily,
   type PageCache,
   facebookPostUrl,
 } from "@/lib/types";
 import { TEMPLATE_PRESETS, GRADIENT_PRESETS } from "@/lib/templates/presets";
 import { cn } from "@/lib/cn";
+
+export interface UploadedTemplateItem {
+  id: string;
+  name: string;
+  url: string;
+  createdAt: string;
+}
+
+export const AVAILABLE_FONTS: {
+  id: TemplateFontFamily;
+  label: string;
+  category: string;
+  fontCss: string;
+}[] = [
+  { id: "Inter", label: "Inter", category: "Modern Clean Sans", fontCss: "'Inter', sans-serif" },
+  { id: "Outfit", label: "Outfit", category: "Punchy Display", fontCss: "'Outfit', sans-serif" },
+  { id: "Montserrat", label: "Montserrat", category: "Geometric Bold", fontCss: "'Montserrat', sans-serif" },
+  { id: "Poppins", label: "Poppins", category: "Friendly Rounded", fontCss: "'Poppins', sans-serif" },
+  { id: "Bebas Neue", label: "Bebas Neue", category: "Tall Bold Impact", fontCss: "'Bebas Neue', sans-serif" },
+  { id: "Playfair Display", label: "Playfair Display", category: "Luxury Serif", fontCss: "'Playfair Display', serif" },
+  { id: "Merriweather", label: "Merriweather", category: "Editorial Serif", fontCss: "'Merriweather', serif" },
+  { id: "Roboto", label: "Roboto", category: "Digital Clean", fontCss: "'Roboto', sans-serif" },
+  { id: "Impact", label: "Impact", category: "Bold Compact", fontCss: "Impact, sans-serif" },
+];
+
+export const FONT_SIZE_PRESETS = [
+  { label: "Small", size: 24 },
+  { label: "Medium", size: 36 },
+  { label: "Large", size: 52 },
+  { label: "Title", size: 68 },
+  { label: "Huge", size: 92 },
+];
+
+export const COLOR_PALETTE = [
+  { name: "White", value: "#ffffff" },
+  { name: "Dark", value: "#0f172a" },
+  { name: "Yellow", value: "#facc15" },
+  { name: "Emerald", value: "#34d399" },
+  { name: "Sky Blue", value: "#38bdf8" },
+  { name: "Coral", value: "#f87171" },
+  { name: "Purple", value: "#c084fc" },
+  { name: "Amber", value: "#fb923c" },
+];
 
 export default function TemplatesPage() {
   // Current active template state
@@ -54,6 +104,14 @@ export default function TemplatesPage() {
     TEMPLATE_PRESETS[0].textElements
   );
 
+  // Uploaded templates gallery state
+  const [uploadedTemplates, setUploadedTemplates] = useState<UploadedTemplateItem[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [isUploadingTemplate, setIsUploadingTemplate] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [templateViewSection, setTemplateViewSection] = useState<"uploaded" | "presets">("uploaded");
+  const templateFileInputRef = useRef<HTMLInputElement | null>(null);
+
   // Brand Logo state
   const [logoUrl, setLogoUrl] = useState<string>("");
   const [logoPosition, setLogoPosition] = useState<
@@ -65,7 +123,7 @@ export default function TemplatesPage() {
   const logoInputRef = useRef<HTMLInputElement | null>(null);
 
   // Studio tabs & UI state
-  const [activeTab, setActiveTab] = useState<"text" | "background" | "logo" | "presets" | "saved">("text");
+  const [activeTab, setActiveTab] = useState<"templates" | "text" | "background" | "logo" | "saved">("templates");
   const [viewMode, setViewMode] = useState<"canvas" | "feed">("canvas");
   const [savedTemplates, setSavedTemplates] = useState<PostTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
@@ -97,6 +155,7 @@ export default function TemplatesPage() {
   // Load initial templates & pages
   useEffect(() => {
     loadTemplates();
+    loadUploadedTemplates();
     try {
       const savedLogo = localStorage.getItem("facebook_bot_brand_logo");
       if (savedLogo) setLogoUrl(savedLogo);
@@ -110,6 +169,21 @@ export default function TemplatesPage() {
       })
       .catch(() => {});
   }, []);
+
+  function loadUploadedTemplates() {
+    try {
+      const stored = localStorage.getItem("facebook_bot_uploaded_templates");
+      if (stored) {
+        const parsed: UploadedTemplateItem[] = JSON.parse(stored);
+        setUploadedTemplates(parsed);
+        if (parsed.length > 0 && !backgroundUrl) {
+          setSelectedTemplateId(parsed[0].id);
+          setBackgroundUrl(parsed[0].url);
+          setBackgroundType("image");
+        }
+      }
+    } catch {}
+  }
 
   async function loadTemplates() {
     setLoadingTemplates(true);
@@ -149,6 +223,13 @@ export default function TemplatesPage() {
 
     async function render() {
       if (!ctx || !canvas) return;
+
+      if (typeof document !== "undefined" && document.fonts) {
+        try {
+          await document.fonts.ready;
+        } catch {}
+      }
+      if (isCancelled) return;
 
       // 1. Draw Background
       if (backgroundType === "image" && backgroundUrl) {
@@ -203,7 +284,16 @@ export default function TemplatesPage() {
         ctx.save();
         const y = (height * el.yOffset) / 100;
         const fontFam = el.fontFamily || "Inter";
-        ctx.font = `${el.fontWeight} ${el.fontSize}px "${fontFam}", sans-serif`;
+        const isSerif = fontFam === "Playfair Display" || fontFam === "Merriweather";
+        const weightValue =
+          el.fontWeight === "bold"
+            ? "700"
+            : el.fontWeight === "800"
+              ? "800"
+              : el.fontWeight === "600"
+                ? "600"
+                : "400";
+        ctx.font = `${weightValue} ${el.fontSize}px "${fontFam}", ${isSerif ? "serif" : "sans-serif"}`;
         ctx.textAlign = el.align;
         ctx.textBaseline = "middle";
 
@@ -422,24 +512,102 @@ export default function TemplatesPage() {
     ctx.closePath();
   }
 
-  // Handle template image upload from user device
-  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      setError("Please select an image file (PNG, JPG, WebP).");
+  // Handle template image upload (supports multiple files and drag-drop)
+  async function handleTemplateFiles(files: FileList | File[]) {
+    const validFiles = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (validFiles.length === 0) {
+      setError("Please select valid image files (JPG, PNG, WebP).");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const url = event.target?.result as string;
-      setBackgroundUrl(url);
+    setIsUploadingTemplate(true);
+    setError(null);
+    setSuccess(null);
+
+    const newItems: UploadedTemplateItem[] = [];
+
+    for (const file of validFiles) {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        let finalUrl = dataUrl;
+        try {
+          const res = await fetch("/api/upload/image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dataUrl }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.url) finalUrl = data.url;
+          }
+        } catch {
+          // Fallback to dataUrl
+        }
+
+        const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
+        newItems.push({
+          id: `tpl-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          name: cleanName.charAt(0).toUpperCase() + cleanName.slice(1),
+          url: finalUrl,
+          createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        });
+      } catch (err) {
+        console.error("Failed to read image file:", err);
+      }
+    }
+
+    if (newItems.length > 0) {
+      setUploadedTemplates((prev) => {
+        const updated = [...newItems, ...prev];
+        try {
+          localStorage.setItem("facebook_bot_uploaded_templates", JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      // Automatically select the newest uploaded template
+      const newest = newItems[0];
+      setSelectedTemplateId(newest.id);
+      setBackgroundUrl(newest.url);
       setBackgroundType("image");
-      setSuccess("Custom template image loaded!");
-    };
-    reader.readAsDataURL(file);
+      setSuccess(`Uploaded ${newItems.length} template image${newItems.length > 1 ? "s" : ""}! Selected "${newest.name}".`);
+    }
+
+    setIsUploadingTemplate(false);
+  }
+
+  function handleSelectTemplate(tpl: UploadedTemplateItem) {
+    setSelectedTemplateId(tpl.id);
+    setBackgroundUrl(tpl.url);
+    setBackgroundType("image");
+    setSuccess(`Selected template "${tpl.name}".`);
+  }
+
+  function handleDeleteUploadedTemplate(id: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setUploadedTemplates((prev) => {
+      const updated = prev.filter((t) => t.id !== id);
+      try {
+        localStorage.setItem("facebook_bot_uploaded_templates", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    if (selectedTemplateId === id) {
+      setSelectedTemplateId(null);
+    }
+  }
+
+  function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.files) {
+      handleTemplateFiles(e.target.files);
+    }
   }
 
   // Handle brand logo upload
@@ -493,20 +661,104 @@ export default function TemplatesPage() {
     setTextElements((prev) => prev.filter((el) => el.id !== id));
   }
 
-  // Add a new text element
-  function addTextElement() {
-    const newEl: TemplateTextElement = {
-      id: `text-${Date.now()}`,
-      type: "custom",
+  // Add a new text layer with type-specific defaults
+  function addTextElement(type: "headline" | "subtext" | "badge" | "footer" | "custom" = "custom") {
+    let defaults: Partial<TemplateTextElement> = {
       text: "New Text Layer",
-      fontSize: 32,
+      fontSize: 36,
       fontWeight: "600",
       fontFamily: "Inter",
       color: "#ffffff",
       align: "center",
       yOffset: 50,
+      showBackgroundPill: false,
     };
-    setTextElements([...textElements, newEl]);
+
+    if (type === "headline") {
+      defaults = {
+        text: "Main Attention Headline",
+        fontSize: 64,
+        fontWeight: "800",
+        fontFamily: "Outfit",
+        color: "#ffffff",
+        align: "center",
+        yOffset: 28,
+        showBackgroundPill: false,
+      };
+    } else if (type === "subtext") {
+      defaults = {
+        text: "Engaging subtext explaining key value and actionable insights.",
+        fontSize: 32,
+        fontWeight: "normal",
+        fontFamily: "Inter",
+        color: "#e2e8f0",
+        align: "center",
+        yOffset: 52,
+        showBackgroundPill: false,
+      };
+    } else if (type === "badge") {
+      defaults = {
+        text: "DAILY TIPS • 2026",
+        fontSize: 20,
+        fontWeight: "bold",
+        fontFamily: "Montserrat",
+        color: "#facc15",
+        align: "center",
+        yOffset: 14,
+        showBackgroundPill: true,
+        pillColor: "rgba(0, 0, 0, 0.65)",
+      };
+    } else if (type === "footer") {
+      defaults = {
+        text: "@YourPageName • Follow for more daily tips",
+        fontSize: 22,
+        fontWeight: "600",
+        fontFamily: "Inter",
+        color: "#cbd5e1",
+        align: "center",
+        yOffset: 88,
+        showBackgroundPill: false,
+      };
+    }
+
+    const newEl: TemplateTextElement = {
+      id: `text-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      type,
+      ...defaults,
+    } as TemplateTextElement;
+
+    setTextElements((prev) => [...prev, newEl]);
+    setSuccess(`Added ${type} text layer.`);
+  }
+
+  function duplicateTextElement(id: string) {
+    const el = textElements.find((t) => t.id === id);
+    if (!el) return;
+    const duplicated: TemplateTextElement = {
+      ...el,
+      id: `text-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      yOffset: Math.min(92, el.yOffset + 6),
+    };
+    setTextElements((prev) => [...prev, duplicated]);
+    setSuccess("Duplicated text layer.");
+  }
+
+  function moveTextElement(id: string, direction: "up" | "down") {
+    const idx = textElements.findIndex((t) => t.id === id);
+    if (idx === -1) return;
+    if (direction === "up" && idx > 0) {
+      const copy = [...textElements];
+      const temp = copy[idx];
+      copy[idx] = copy[idx - 1];
+      copy[idx - 1] = temp;
+      setTextElements(copy);
+    } else if (direction === "down" && idx < textElements.length - 1) {
+      const copy = [...textElements];
+      const temp = copy[idx];
+      copy[idx] = copy[idx + 1];
+      copy[idx + 1] = temp;
+      setTextElements(copy);
+    }
   }
 
   // Save template to library
@@ -930,6 +1182,51 @@ export default function TemplatesPage() {
               </div>
             )}
           </div>
+
+          {/* Quick Uploaded Template Chooser Strip */}
+          {uploadedTemplates.length > 0 && (
+            <div className="rounded-xl border border-border bg-surface p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-foreground flex items-center gap-1.5">
+                  <ImageSquare size={15} className="text-primary" />
+                  Uploaded Templates Gallery ({uploadedTemplates.length})
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Click any template to apply immediately
+                </span>
+              </div>
+              <div className="flex gap-2.5 overflow-x-auto pb-1 pt-0.5">
+                {uploadedTemplates.map((tpl) => {
+                  const isChosen = selectedTemplateId === tpl.id || backgroundUrl === tpl.url;
+                  return (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      onClick={() => handleSelectTemplate(tpl)}
+                      className={cn(
+                        "group relative flex-shrink-0 cursor-pointer overflow-hidden rounded-lg border-2 text-left transition",
+                        isChosen
+                          ? "border-primary ring-2 ring-primary/30"
+                          : "border-border hover:border-primary/60"
+                      )}
+                      style={{ width: "100px", height: "72px" }}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={tpl.url} alt={tpl.name} className="h-full w-full object-cover" />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-1">
+                        <p className="truncate text-[9px] font-medium text-white">{tpl.name}</p>
+                      </div>
+                      {isChosen && (
+                        <div className="absolute right-1 top-1 rounded-full bg-primary p-0.5 text-white shadow-xs">
+                          <CheckCircle size={12} weight="fill" />
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* RIGHT: Inspector & Customization Controls */}
@@ -937,6 +1234,18 @@ export default function TemplatesPage() {
           <Card className="p-4">
             {/* Tab switchers */}
             <div className="grid grid-cols-5 gap-1 rounded-xl border border-border bg-surface-2/60 p-1 text-xs">
+              <button
+                type="button"
+                onClick={() => setActiveTab("templates")}
+                className={cn(
+                  "cursor-pointer rounded-lg py-1.5 font-medium transition",
+                  activeTab === "templates"
+                    ? "bg-surface text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Templates
+              </button>
               <button
                 type="button"
                 onClick={() => setActiveTab("text")}
@@ -975,18 +1284,6 @@ export default function TemplatesPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setActiveTab("presets")}
-                className={cn(
-                  "cursor-pointer rounded-lg py-1.5 font-medium transition",
-                  activeTab === "presets"
-                    ? "bg-surface text-foreground shadow-xs"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                Presets
-              </button>
-              <button
-                type="button"
                 onClick={() => setActiveTab("saved")}
                 className={cn(
                   "cursor-pointer rounded-lg py-1.5 font-medium transition",
@@ -999,149 +1296,604 @@ export default function TemplatesPage() {
               </button>
             </div>
 
-            {/* TAB 1: TEXT LAYERS */}
-            {activeTab === "text" && (
+            {/* TAB: TEMPLATES (UPLOAD & CHOOSE) */}
+            {activeTab === "templates" && (
               <div className="mt-4 space-y-4">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-foreground">
-                    Template Title &amp; Layers
-                  </label>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={addTextElement}
-                    className="h-7 gap-1 text-[11px]"
+                {/* Switcher between Uploaded & Presets */}
+                <div className="flex items-center gap-1.5 rounded-lg border border-border bg-surface-2/40 p-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setTemplateViewSection("uploaded")}
+                    className={cn(
+                      "flex-1 cursor-pointer rounded-md py-1 font-medium transition text-center",
+                      templateViewSection === "uploaded"
+                        ? "bg-surface text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
                   >
-                    <Plus size={13} /> Add Layer
-                  </Button>
+                    My Uploaded ({uploadedTemplates.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTemplateViewSection("presets")}
+                    className={cn(
+                      "flex-1 cursor-pointer rounded-md py-1 font-medium transition text-center",
+                      templateViewSection === "presets"
+                        ? "bg-surface text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    Presets ({TEMPLATE_PRESETS.length})
+                  </button>
                 </div>
 
-                <div className="space-y-1">
-                  <label className="text-[11px] font-medium text-muted-foreground">
-                    Template Name
+                {templateViewSection === "uploaded" ? (
+                  <div className="space-y-4">
+                    {/* Upload Box */}
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-foreground">
+                          Upload Template Images
+                        </label>
+                        <span className="text-[10px] text-muted-foreground">PNG, JPG, WebP</span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        Upload background images for your posts. Select multiple at once.
+                      </p>
+
+                      <input
+                        type="file"
+                        ref={templateFileInputRef}
+                        accept="image/*"
+                        multiple
+                        onChange={(e) => {
+                          if (e.target.files) handleTemplateFiles(e.target.files);
+                          e.target.value = "";
+                        }}
+                        className="hidden"
+                      />
+
+                      <div
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          setIsDragOver(true);
+                        }}
+                        onDragLeave={() => setIsDragOver(false)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setIsDragOver(false);
+                          if (e.dataTransfer.files) handleTemplateFiles(e.dataTransfer.files);
+                        }}
+                        onClick={() => templateFileInputRef.current?.click()}
+                        className={cn(
+                          "mt-2 flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition",
+                          isDragOver
+                            ? "border-primary bg-primary/10"
+                            : "border-border bg-surface-2/40 hover:border-primary hover:bg-surface-2"
+                        )}
+                      >
+                        {isUploadingTemplate ? (
+                          <div className="flex flex-col items-center gap-2 py-2">
+                            <ArrowClockwise size={22} className="animate-spin text-primary" />
+                            <span className="text-xs font-medium text-foreground">
+                              Uploading &amp; processing templates…
+                            </span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+                              <UploadSimple size={20} />
+                            </div>
+                            <span className="mt-2 text-xs font-semibold text-foreground">
+                              Click to choose template images
+                            </span>
+                            <span className="text-[11px] text-muted-foreground">
+                              or drag and drop them here (supports multiple)
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Gallery: Choose from uploaded templates */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-foreground">
+                          Choose From Templates
+                        </label>
+                        {uploadedTemplates.length > 0 && (
+                          <span className="text-[10px] text-muted-foreground">
+                            Click to select template
+                          </span>
+                        )}
+                      </div>
+
+                      {uploadedTemplates.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-border bg-surface-2/20 p-6 text-center">
+                          <ImageSquare size={28} className="mx-auto text-muted-foreground/60" />
+                          <p className="mt-2 text-xs font-medium text-foreground">No templates uploaded yet</p>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            Upload your template graphics above to choose from them here.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2 max-h-[340px] overflow-y-auto pr-1">
+                          {uploadedTemplates.map((tpl) => {
+                            const isChosen =
+                              selectedTemplateId === tpl.id || backgroundUrl === tpl.url;
+                            return (
+                              <div
+                                key={tpl.id}
+                                onClick={() => handleSelectTemplate(tpl)}
+                                className={cn(
+                                  "group relative flex cursor-pointer flex-col overflow-hidden rounded-xl border text-left transition",
+                                  isChosen
+                                    ? "border-primary bg-primary/5 ring-2 ring-primary/40 shadow-xs"
+                                    : "border-border bg-surface hover:border-primary/60 hover:bg-surface-2"
+                                )}
+                              >
+                                {/* Thumbnail */}
+                                <div className="relative aspect-video w-full overflow-hidden bg-black/40">
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={tpl.url}
+                                    alt={tpl.name}
+                                    className="h-full w-full object-cover transition group-hover:scale-105"
+                                  />
+                                  {isChosen && (
+                                    <div className="absolute left-1.5 top-1.5 rounded-full bg-primary px-1.5 py-0.5 text-[9px] font-semibold text-white shadow-xs flex items-center gap-1">
+                                      <CheckCircle size={10} weight="fill" /> Selected
+                                    </div>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => handleDeleteUploadedTemplate(tpl.id, e)}
+                                    title="Delete template"
+                                    className="absolute right-1.5 top-1.5 rounded-md bg-black/70 p-1 text-white opacity-0 transition hover:bg-destructive group-hover:opacity-100"
+                                  >
+                                    <Trash size={12} />
+                                  </button>
+                                </div>
+
+                                {/* Label & Action */}
+                                <div className="p-2">
+                                  <p className="truncate text-xs font-semibold text-foreground">
+                                    {tpl.name}
+                                  </p>
+                                  <p className="text-[10px] text-muted-foreground">{tpl.createdAt}</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* Designer Presets section */
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-muted-foreground">
+                      Click any layout to load its pre-configured typography, gradient &amp; structure.
+                    </p>
+                    <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                      {TEMPLATE_PRESETS.map((tpl) => (
+                        <div
+                          key={tpl.id}
+                          onClick={() => applyTemplate(tpl)}
+                          className="flex cursor-pointer items-center justify-between rounded-xl border border-border bg-surface p-3 transition hover:border-primary hover:bg-surface-2"
+                        >
+                          <div>
+                            <h4 className="text-xs font-semibold">{tpl.name}</h4>
+                            <p className="text-[11px] text-muted-foreground">{tpl.category}</p>
+                          </div>
+                          <Badge>{tpl.ratio}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB: TEXT LAYERS & TYPOGRAPHY */}
+            {activeTab === "text" && (
+              <div className="mt-4 space-y-4">
+                {/* Header & Quick Add buttons */}
+                <div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-foreground">
+                      Text Layers ({textElements.length})
+                    </label>
+                    <span className="text-[10px] text-muted-foreground">
+                      Customize fonts &amp; sizes
+                    </span>
+                  </div>
+
+                  {/* Add Text Presets Row */}
+                  <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => addTextElement("headline")}
+                      className="h-7 text-[11px] gap-1 font-semibold"
+                    >
+                      <Plus size={12} /> + Headline
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => addTextElement("subtext")}
+                      className="h-7 text-[11px] gap-1"
+                    >
+                      <Plus size={12} /> + Subtitle
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => addTextElement("badge")}
+                      className="h-7 text-[11px] gap-1"
+                    >
+                      <Plus size={12} /> + Badge
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => addTextElement("footer")}
+                      className="h-7 text-[11px] gap-1"
+                    >
+                      <Plus size={12} /> + CTA / Footer
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Template Name input */}
+                <div className="space-y-1 rounded-xl border border-border bg-surface-2/40 p-2.5">
+                  <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Template Title
                   </label>
                   <input
                     value={templateName}
                     onChange={(e) => setTemplateName(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs font-medium focus:border-primary focus:outline-none"
-                    placeholder="e.g. Weekly Financial Breakdown"
+                    className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium focus:border-primary focus:outline-none"
+                    placeholder="e.g. 5 Productivity Hacks"
                   />
                 </div>
 
-                {/* Individual Text Elements */}
-                <div className="space-y-3 pt-2">
-                  {textElements.map((el, idx) => (
-                    <div
-                      key={el.id}
-                      className="rounded-xl border border-border bg-surface-2/40 p-3 text-xs space-y-2.5"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold uppercase tracking-wider text-[10px] text-muted-foreground">
-                          {el.type === "badge"
-                            ? "Category Badge / Eyebrow"
-                            : el.type === "headline"
-                              ? "Main Headline / Hook"
-                              : el.type === "subtext"
-                                ? "Body / Subtext"
-                                : el.type === "footer"
-                                  ? "Footer / Branding"
-                                  : `Text Layer #${idx + 1}`}
-                        </span>
+                {/* Empty State */}
+                {textElements.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border bg-surface-2/20 p-6 text-center">
+                    <TextT size={28} className="mx-auto text-muted-foreground/60" />
+                    <p className="mt-2 text-xs font-medium text-foreground">No text layers yet</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      Click any &quot;+ Add&quot; button above to place text on your template.
+                    </p>
+                  </div>
+                ) : (
+                  /* List of Individual Text Layers */
+                  <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+                    {textElements.map((el, idx) => (
+                      <div
+                        key={el.id}
+                        className="rounded-xl border border-border bg-surface-2/50 p-3 text-xs space-y-3 shadow-xs"
+                      >
+                        {/* Layer Top Bar */}
+                        <div className="flex items-center justify-between border-b border-border/60 pb-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-primary/10 text-[10px] font-bold text-primary">
+                              {idx + 1}
+                            </span>
+                            <span className="font-semibold text-xs text-foreground">
+                              {el.type === "headline"
+                                ? "Headline"
+                                : el.type === "badge"
+                                  ? "Category Badge"
+                                  : el.type === "subtext"
+                                    ? "Subtitle"
+                                    : el.type === "footer"
+                                      ? "CTA / Footer"
+                                      : `Text Layer #${idx + 1}`}
+                            </span>
+                          </div>
 
-                        <button
-                          type="button"
-                          onClick={() => removeTextElement(el.id)}
-                          aria-label="Remove layer"
-                          className="cursor-pointer text-muted-foreground hover:text-destructive"
-                        >
-                          <Trash size={14} />
-                        </button>
-                      </div>
-
-                      <textarea
-                        value={el.text}
-                        rows={el.type === "headline" ? 2 : 1}
-                        onChange={(e) => updateTextElement(el.id, { text: e.target.value })}
-                        placeholder="Enter text..."
-                        className="w-full resize-none rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs focus:border-primary focus:outline-none"
-                      />
-
-                      {/* Font & Color Row */}
-                      <div className="grid grid-cols-3 gap-2">
-                        <div>
-                          <label className="text-[10px] text-muted-foreground">Font</label>
-                          <select
-                            value={el.fontFamily}
-                            onChange={(e) =>
-                              updateTextElement(el.id, {
-                                fontFamily: e.target.value as any,
-                              })
-                            }
-                            className="mt-0.5 w-full rounded-md border border-border bg-surface p-1 text-[11px]"
-                          >
-                            <option value="Inter">Inter (Clean)</option>
-                            <option value="Outfit">Outfit (Punchy)</option>
-                            <option value="Merriweather">Merriweather (Serif)</option>
-                            <option value="Montserrat">Montserrat</option>
-                          </select>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => moveTextElement(el.id, "up")}
+                              disabled={idx === 0}
+                              title="Move Layer Up"
+                              className="rounded p-1 text-muted-foreground hover:bg-surface hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                            >
+                              <CaretUp size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveTextElement(el.id, "down")}
+                              disabled={idx === textElements.length - 1}
+                              title="Move Layer Down"
+                              className="rounded p-1 text-muted-foreground hover:bg-surface hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+                            >
+                              <CaretDown size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => duplicateTextElement(el.id)}
+                              title="Duplicate Layer"
+                              className="rounded p-1 text-muted-foreground hover:bg-surface hover:text-foreground"
+                            >
+                              <Copy size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeTextElement(el.id)}
+                              title="Delete Layer"
+                              className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            >
+                              <Trash size={13} />
+                            </button>
+                          </div>
                         </div>
 
-                        <div>
-                          <label className="text-[10px] text-muted-foreground">Size ({el.fontSize}px)</label>
+                        {/* Text Content Field */}
+                        <textarea
+                          value={el.text}
+                          rows={el.type === "headline" ? 2 : 1}
+                          onChange={(e) => updateTextElement(el.id, { text: e.target.value })}
+                          placeholder="Type your text here..."
+                          className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-xs font-medium focus:border-primary focus:outline-none"
+                        />
+
+                        {/* FONT FAMILY & WEIGHT */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Font Style
+                            </label>
+                            <select
+                              value={el.fontFamily}
+                              onChange={(e) =>
+                                updateTextElement(el.id, {
+                                  fontFamily: e.target.value as TemplateFontFamily,
+                                })
+                              }
+                              className="mt-1 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium focus:border-primary focus:outline-none"
+                            >
+                              {AVAILABLE_FONTS.map((f) => (
+                                <option key={f.id} value={f.id} style={{ fontFamily: f.fontCss }}>
+                                  {f.label} ({f.category})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Weight
+                            </label>
+                            <div className="mt-1 grid grid-cols-4 gap-1 text-[11px]">
+                              {[
+                                { id: "normal", label: "Reg" },
+                                { id: "600", label: "Med" },
+                                { id: "bold", label: "Bold" },
+                                { id: "800", label: "Hvy" },
+                              ].map((w) => (
+                                <button
+                                  key={w.id}
+                                  type="button"
+                                  onClick={() =>
+                                    updateTextElement(el.id, {
+                                      fontWeight: w.id as TemplateTextElement["fontWeight"],
+                                    })
+                                  }
+                                  className={cn(
+                                    "rounded-md border py-1 font-medium transition text-center",
+                                    el.fontWeight === w.id
+                                      ? "border-primary bg-primary/10 text-primary font-bold shadow-xs"
+                                      : "border-border bg-surface text-muted-foreground hover:text-foreground"
+                                  )}
+                                >
+                                  {w.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* FONT SIZE CONTROLS */}
+                        <div className="space-y-1.5 rounded-lg border border-border/80 bg-surface/70 p-2.5">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Font Size
+                            </span>
+                            <div className="flex items-center gap-1 font-mono text-[11px]">
+                              <input
+                                type="number"
+                                min="12"
+                                max="140"
+                                value={el.fontSize}
+                                onChange={(e) =>
+                                  updateTextElement(el.id, {
+                                    fontSize: Math.max(12, Math.min(140, Number(e.target.value) || 24)),
+                                  })
+                                }
+                                className="w-12 rounded border border-border bg-surface px-1.5 py-0.5 text-right font-mono text-xs focus:border-primary focus:outline-none"
+                              />
+                              <span className="text-muted-foreground">px</span>
+                            </div>
+                          </div>
+
+                          {/* Range Slider */}
                           <input
                             type="range"
-                            min="18"
-                            max="100"
+                            min="14"
+                            max="120"
                             value={el.fontSize}
                             onChange={(e) =>
                               updateTextElement(el.id, { fontSize: Number(e.target.value) })
                             }
-                            className="mt-1 w-full accent-primary"
+                            className="w-full accent-primary"
+                          />
+
+                          {/* Quick Size Preset Chips */}
+                          <div className="flex items-center gap-1.5 pt-0.5">
+                            <span className="text-[9px] text-muted-foreground">Presets:</span>
+                            {FONT_SIZE_PRESETS.map((p) => (
+                              <button
+                                key={p.size}
+                                type="button"
+                                onClick={() => updateTextElement(el.id, { fontSize: p.size })}
+                                className={cn(
+                                  "rounded px-1.5 py-0.5 text-[10px] font-medium transition",
+                                  el.fontSize === p.size
+                                    ? "bg-primary text-primary-foreground font-semibold"
+                                    : "bg-surface-2 text-muted-foreground hover:bg-surface hover:text-foreground"
+                                )}
+                              >
+                                {p.size}px
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* ALIGNMENT & COLOR ROW */}
+                        <div className="grid grid-cols-2 gap-2">
+                          {/* Alignment buttons */}
+                          <div>
+                            <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Alignment
+                            </label>
+                            <div className="mt-1 flex items-center rounded-lg border border-border bg-surface p-0.5">
+                              {[
+                                { id: "left", label: "Left", icon: TextAlignLeft },
+                                { id: "center", label: "Center", icon: TextAlignCenter },
+                                { id: "right", label: "Right", icon: TextAlignRight },
+                              ].map((al) => {
+                                const Icon = al.icon;
+                                return (
+                                  <button
+                                    key={al.id}
+                                    type="button"
+                                    onClick={() => updateTextElement(el.id, { align: al.id as TemplateTextElement["align"] })}
+                                    className={cn(
+                                      "flex flex-1 items-center justify-center rounded-md py-1 transition",
+                                      el.align === al.id
+                                        ? "bg-primary text-primary-foreground shadow-xs"
+                                        : "text-muted-foreground hover:text-foreground"
+                                    )}
+                                    title={al.label}
+                                  >
+                                    <Icon size={14} />
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Color Palette & Custom Picker */}
+                          <div>
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                Color
+                              </label>
+                              <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                                {el.color}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex items-center gap-1.5">
+                              <input
+                                type="color"
+                                value={el.color.startsWith("#") ? el.color : "#ffffff"}
+                                onChange={(e) => updateTextElement(el.id, { color: e.target.value })}
+                                className="h-7 w-7 shrink-0 cursor-pointer rounded-lg border border-border bg-transparent p-0.5"
+                              />
+                              <div className="flex flex-wrap gap-1">
+                                {COLOR_PALETTE.slice(0, 5).map((c) => (
+                                  <button
+                                    key={c.value}
+                                    type="button"
+                                    onClick={() => updateTextElement(el.id, { color: c.value })}
+                                    title={c.name}
+                                    className={cn(
+                                      "h-5 w-5 rounded-full border transition",
+                                      el.color.toLowerCase() === c.value.toLowerCase()
+                                        ? "ring-2 ring-primary ring-offset-1 border-white"
+                                        : "border-black/20 hover:scale-110"
+                                    )}
+                                    style={{ backgroundColor: c.value }}
+                                  />
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* VERTICAL POSITION */}
+                        <div className="space-y-1 pt-1">
+                          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider">
+                              Vertical Placement
+                            </span>
+                            <span className="font-mono">{el.yOffset}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="5"
+                            max="95"
+                            value={el.yOffset}
+                            onChange={(e) =>
+                              updateTextElement(el.id, { yOffset: Number(e.target.value) })
+                            }
+                            className="w-full accent-primary"
                           />
                         </div>
 
-                        <div>
-                          <label className="text-[10px] text-muted-foreground">Color</label>
-                          <div className="mt-0.5 flex items-center gap-1.5">
+                        {/* CONTRAST PILL TOGGLE */}
+                        <div className="rounded-lg border border-border/80 bg-surface/50 p-2 space-y-2">
+                          <label className="flex cursor-pointer items-center justify-between text-xs font-medium">
+                            <span className="text-[11px] text-foreground">
+                              Contrast Background Pill
+                            </span>
                             <input
-                              type="color"
-                              value={el.color.startsWith("#") ? el.color : "#ffffff"}
-                              onChange={(e) => updateTextElement(el.id, { color: e.target.value })}
-                              className="h-6 w-6 cursor-pointer rounded border border-border bg-transparent"
-                            />
-                            <select
-                              value={el.align}
+                              type="checkbox"
+                              checked={Boolean(el.showBackgroundPill)}
                               onChange={(e) =>
-                                updateTextElement(el.id, { align: e.target.value as any })
+                                updateTextElement(el.id, { showBackgroundPill: e.target.checked })
                               }
-                              className="w-full rounded-md border border-border bg-surface p-1 text-[11px]"
-                            >
-                              <option value="left">Left</option>
-                              <option value="center">Center</option>
-                              <option value="right">Right</option>
-                            </select>
-                          </div>
+                              className="h-3.5 w-3.5 accent-primary cursor-pointer"
+                            />
+                          </label>
+
+                          {el.showBackgroundPill && (
+                            <div className="flex items-center gap-2 pt-1">
+                              <span className="text-[10px] text-muted-foreground">Pill Color:</span>
+                              <div className="flex items-center gap-1.5">
+                                {[
+                                  { label: "Dark", val: "rgba(0, 0, 0, 0.65)" },
+                                  { label: "White", val: "rgba(255, 255, 255, 0.9)" },
+                                  { label: "Primary", val: "rgba(44, 95, 212, 0.85)" },
+                                  { label: "Emerald", val: "rgba(16, 185, 129, 0.85)" },
+                                ].map((pill) => (
+                                  <button
+                                    key={pill.label}
+                                    type="button"
+                                    onClick={() => updateTextElement(el.id, { pillColor: pill.val })}
+                                    className={cn(
+                                      "rounded px-2 py-0.5 text-[10px] font-medium transition",
+                                      el.pillColor === pill.val
+                                        ? "bg-primary text-white"
+                                        : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                                    )}
+                                  >
+                                    {pill.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
-
-                      {/* Vertical Position slider */}
-                      <div className="flex items-center justify-between gap-2 pt-1 text-[11px] text-muted-foreground">
-                        <span>Vertical position:</span>
-                        <input
-                          type="range"
-                          min="5"
-                          max="95"
-                          value={el.yOffset}
-                          onChange={(e) =>
-                            updateTextElement(el.id, { yOffset: Number(e.target.value) })
-                          }
-                          className="flex-1 accent-primary"
-                        />
-                        <span className="w-8 text-right font-mono">{el.yOffset}%</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1332,7 +2084,7 @@ export default function TemplatesPage() {
                           <button
                             key={pos.id}
                             type="button"
-                            onClick={() => setLogoPosition(pos.id as any)}
+                            onClick={() => setLogoPosition(pos.id as typeof logoPosition)}
                             className={cn(
                               "cursor-pointer rounded-lg border py-2 text-center text-[11px] font-medium transition",
                               logoPosition === pos.id
@@ -1401,35 +2153,6 @@ export default function TemplatesPage() {
               </div>
             )}
 
-            {/* TAB 3: PRESETS */}
-            {activeTab === "presets" && (
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="text-xs font-semibold text-foreground">
-                    Ready-to-Use Designer Layouts
-                  </label>
-                  <p className="text-[11px] text-muted-foreground">
-                    Click any design to load its layout, fonts, and colors into your studio.
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  {TEMPLATE_PRESETS.map((tpl) => (
-                    <div
-                      key={tpl.id}
-                      onClick={() => applyTemplate(tpl)}
-                      className="flex cursor-pointer items-center justify-between rounded-xl border border-border bg-surface p-3 transition hover:border-primary hover:bg-surface-2"
-                    >
-                      <div>
-                        <h4 className="text-xs font-semibold">{tpl.name}</h4>
-                        <p className="text-[11px] text-muted-foreground">{tpl.category}</p>
-                      </div>
-                      <Badge>{tpl.ratio}</Badge>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* TAB 4: SAVED CUSTOM TEMPLATES */}
             {activeTab === "saved" && (

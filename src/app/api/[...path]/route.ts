@@ -7,8 +7,18 @@ import {
   sessionCookieOptions,
   verifySessionToken,
 } from "@/lib/auth/session";
+import {
+  validateIntegrationAuth,
+  computePostContentHash,
+  createApprovalToken,
+  verifyApprovalToken,
+  issueApprovalToken,
+  verifyAndConsumeApprovalToken,
+  releaseUnpublishedApprovalToken,
+  StoragePersistenceError,
+} from "@/lib/auth/integration";
 import { generateContent, DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/text";
-import { generateImage } from "@/lib/ai/image";
+import { generateImage, ingestExternalImage } from "@/lib/ai/image";
 import { getTrendingTopics } from "@/lib/trends";
 import {
   createPostRecord,
@@ -46,7 +56,7 @@ import { OAUTH_STATE_COOKIE } from "@/lib/facebook/oauth-state";
 import { publishPostNow } from "@/lib/facebook/publish";
 import { maybeRunAutopilot } from "@/lib/autopilot";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import type { PostStatus } from "@/lib/types";
+import { facebookPostUrl, type PostStatus } from "@/lib/types";
 
 /**
  * Every API endpoint lives in this one catch-all handler on purpose.
@@ -108,8 +118,21 @@ async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
   return auth === `Bearer ${env.cronSecret}` || url.searchParams.get("secret") === env.cronSecret;
 }
 
+const INTEGRATION_ROUTES = new Set(["health", "chatgpt/posts"]);
+
+function isIntegrationRoute(route: string): boolean {
+  if (INTEGRATION_ROUTES.has(route)) return true;
+  if (route.startsWith("chatgpt/posts/")) return true;
+  return false;
+}
+
 async function guard(route: string, req: Request, url: URL): Promise<Response | null> {
   if (OPEN_ROUTES.has(route)) return null;
+  // ChatGPT / M2M integration routes strictly require Bearer INTEGRATION_API_KEY.
+  // The dashboard session cookie is deliberately rejected here to avoid cross-context confusion.
+  if (isIntegrationRoute(route)) {
+    return validateIntegrationAuth(req) ? null : unauthorized();
+  }
   if (route === "cron/process-queue") {
     return (await cronAuthorized(req, url)) ? null : unauthorized();
   }
@@ -240,6 +263,44 @@ export async function GET(req: Request, ctx: Ctx) {
       return runCron(req, url);
     }
 
+    if (route === "health") {
+      const db = supabaseAdmin();
+      const { data: settings, error: dbError } = await db
+        .from("app_settings")
+        .select("default_page_id")
+        .eq("id", 1)
+        .single();
+
+      if (dbError) {
+        return json({ status: "unavailable", database: "error" }, 503);
+      }
+
+      return json({
+        status: "ok",
+        database: "ok",
+        facebookPageConfigured: Boolean(settings?.default_page_id),
+      });
+    }
+
+    // chatgpt/posts/<id>
+    if (path.length === 3 && path[0] === "chatgpt" && path[1] === "posts") {
+      const post = await getPost(path[2]);
+      if (!post) return notFound();
+      return json({
+        postId: post.id,
+        status: post.status === "draft" ? "pending_review" : post.status,
+        title: post.title,
+        description: post.description,
+        hashtags: post.hashtags,
+        imageUrl: post.image_url,
+        pageName: post.page_name,
+        facebookPostId: post.facebook_post_id,
+        facebookPostUrl: post.facebook_post_id ? facebookPostUrl(post.facebook_post_id) : null,
+        postedAt: post.posted_at,
+        errorMessage: post.error_message,
+      });
+    }
+
     return notFound();
   });
 }
@@ -250,7 +311,7 @@ const LoginBody = z.object({ password: z.string() });
 
 const ContentBody = z.object({
   topic: z.string().trim().min(2).max(200),
-  prompt: z.string().max(4000).optional(),
+  prompt: z.string().max(10000).optional(),
 });
 
 const ImageBody = z.object({
@@ -288,6 +349,28 @@ const CredentialsBody = z.object({
   // Empty string clears it, for an app that uses classic Facebook Login.
   configId: z.string().trim().max(64).optional(),
 });
+
+const CreateChatGPTPostBody = z.object({
+  title: z.string().trim().min(1).max(120),
+  description: z.string().trim().min(1).max(500),
+  hashtags: z.array(z.string().trim().min(1).max(50)).max(15).default([]),
+  imageUrl: z.string().url(),
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
+});
+
+const ApproveChatGPTPostBody = z.object({
+  userConfirmed: z.boolean(),
+  contentHash: z.string().trim().min(1),
+});
+
+const PublishChatGPTPostBody = z.object({
+  approvalToken: z.string().trim().min(10),
+  dryRun: z.boolean().optional(),
+  forceRetry: z.boolean().optional(),
+});
+
+// In-flight concurrency lock to serialize concurrent creation requests using the same idempotency key
+const creationLocks = new Map<string, Promise<{ body: unknown; status: number }>>();
 
 export async function POST(req: Request, ctx: Ctx) {
   const { path } = await ctx.params;
@@ -378,6 +461,48 @@ export async function POST(req: Request, ctx: Ctx) {
       } catch (err) {
         return json({ error: err instanceof Error ? err.message : "Failed to publish." }, 502);
       }
+    }
+
+    // posts/<id>/approve — authenticated dashboard human approval action
+    if (path.length === 3 && path[0] === "posts" && path[2] === "approve") {
+      const id = path[1];
+      const post = await getPost(id);
+      if (!post) return notFound();
+      if (post.status === "posted") {
+        return json({ error: "Post has already been published to Facebook." }, 400);
+      }
+
+      const settings = await getSettings();
+      const pageId = post.page_id ?? settings.default_page_id;
+      if (!pageId) {
+        return json({ error: "Destination Facebook Page is not configured in settings." }, 409);
+      }
+
+      const currentHash = computePostContentHash({
+        postId: post.id,
+        title: post.title,
+        description: post.description,
+        hashtags: post.hashtags,
+        imageUrl: post.image_url,
+        pageId,
+        linkUrl: post.link_url,
+        utmSuffix: settings.utm_suffix,
+      });
+
+      const updated = await updatePostRecord(post.id, {
+        approved_by_user: true,
+        approved_at: new Date().toISOString(),
+        approval_content_hash: currentHash,
+      });
+
+      return json({
+        ok: true,
+        postId: updated.id,
+        approvedByUser: true,
+        approvedAt: updated.approved_at,
+        approvalContentHash: updated.approval_content_hash,
+        message: "Post successfully approved by human administrator in dashboard.",
+      });
     }
 
     if (route === "facebook/default-page") {
@@ -474,6 +599,426 @@ export async function POST(req: Request, ctx: Ctx) {
       return json({ url: data.publicUrl });
     }
 
+    if (route === "chatgpt/posts") {
+      const parsed = CreateChatGPTPostBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: parsed.error.issues[0]?.message ?? "Invalid post data." }, 400);
+      }
+      const b = parsed.data;
+
+      // Concurrency handling for same idempotencyKey
+      if (b.idempotencyKey) {
+        const key = b.idempotencyKey;
+        const existingPromise = creationLocks.get(key);
+        if (existingPromise) {
+          const res = await existingPromise;
+          return json(res.body, res.status);
+        }
+      }
+
+      const executeCreation = async (): Promise<{ body: unknown; status: number }> => {
+        const db = supabaseAdmin();
+        const settings = await getSettings();
+
+        if (b.idempotencyKey) {
+          const { data: existing } = await db
+            .from("posts")
+            .select("*")
+            .eq("topic", `chatgpt:${b.idempotencyKey}`)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (existing) {
+            const contentHash = computePostContentHash({
+              postId: existing.id,
+              title: existing.title,
+              description: existing.description,
+              hashtags: existing.hashtags,
+              imageUrl: existing.image_url,
+              pageId: existing.page_id || settings.default_page_id || "",
+              linkUrl: existing.link_url,
+              utmSuffix: settings.utm_suffix,
+            });
+            return {
+              status: 200,
+              body: {
+                postId: existing.id,
+                status: existing.status === "draft" ? "pending_review" : existing.status,
+                title: existing.title,
+                description: existing.description,
+                hashtags: existing.hashtags,
+                imageUrl: existing.image_url,
+                pageName: existing.page_name,
+                contentHash,
+                reviewUrl: `/dashboard/queue?post=${existing.id}`,
+                approvalRequired: true,
+                message:
+                  "Existing post returned for idempotency key. Please display the complete preview to the user. " +
+                  "Ask: 'Do you approve publishing this post to Facebook?' and wait for explicit confirmation in the next turn before calling approve.",
+              },
+            };
+          }
+        }
+
+        if (!settings.default_page_id || !settings.default_page_token) {
+          return {
+            status: 409,
+            body: {
+              error:
+                "No Facebook Page is currently configured in the application. Please select a default Page in Settings first.",
+            },
+          };
+        }
+
+        let ingested: { url: string };
+        try {
+          ingested = await ingestExternalImage(b.imageUrl);
+        } catch (err) {
+          return {
+            status: 400,
+            body: {
+              error:
+                err instanceof Error ? err.message : "Failed to import image from external URL.",
+            },
+          };
+        }
+
+        try {
+          const post = await createPostRecord({
+            topic: b.idempotencyKey ? `chatgpt:${b.idempotencyKey}` : "chatgpt",
+            title: b.title,
+            description: b.description,
+            hashtags: b.hashtags,
+            image_url: ingested.url,
+            image_source: "ai",
+            link_url: null,
+            page_id: settings.default_page_id,
+            page_name: settings.default_page_name,
+            scheduled_at: null,
+            status: "draft",
+          });
+
+          const contentHash = computePostContentHash({
+            postId: post.id,
+            title: post.title,
+            description: post.description,
+            hashtags: post.hashtags,
+            imageUrl: post.image_url,
+            pageId: settings.default_page_id,
+            linkUrl: post.link_url,
+            utmSuffix: settings.utm_suffix,
+          });
+
+          return {
+            status: 201,
+            body: {
+              postId: post.id,
+              status: "pending_review",
+              title: post.title,
+              description: post.description,
+              hashtags: post.hashtags,
+              imageUrl: post.image_url,
+              pageName: post.page_name,
+              contentHash,
+              reviewUrl: `/dashboard/queue?post=${post.id}`,
+              approvalRequired: true,
+              message:
+                "Post staged and awaiting explicit user review. Please display the complete image preview and caption to the user. " +
+                "Ask: 'Do you approve publishing this post to Facebook?' and wait for explicit confirmation in the next turn before calling approve. " +
+                "Alternatively, the user can review and approve directly in the authenticated dashboard at reviewUrl.",
+            },
+          };
+        } catch (insertErr) {
+          // If a concurrent insert succeeded or unique constraint fired, return existing
+          if (b.idempotencyKey) {
+            const { data: existingAfterConflict } = await db
+              .from("posts")
+              .select("*")
+              .eq("topic", `chatgpt:${b.idempotencyKey}`)
+              .order("created_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (existingAfterConflict) {
+              const contentHash = computePostContentHash({
+                postId: existingAfterConflict.id,
+                title: existingAfterConflict.title,
+                description: existingAfterConflict.description,
+                hashtags: existingAfterConflict.hashtags,
+                imageUrl: existingAfterConflict.image_url,
+                pageId: existingAfterConflict.page_id || settings.default_page_id || "",
+                linkUrl: existingAfterConflict.link_url,
+                utmSuffix: settings.utm_suffix,
+              });
+              return {
+                status: 200,
+                body: {
+                  postId: existingAfterConflict.id,
+                  status:
+                    existingAfterConflict.status === "draft"
+                      ? "pending_review"
+                      : existingAfterConflict.status,
+                  title: existingAfterConflict.title,
+                  description: existingAfterConflict.description,
+                  hashtags: existingAfterConflict.hashtags,
+                  imageUrl: existingAfterConflict.image_url,
+                  pageName: existingAfterConflict.page_name,
+                  contentHash,
+                  reviewUrl: `/dashboard/queue?post=${existingAfterConflict.id}`,
+                  approvalRequired: true,
+                  message:
+                    "Existing post returned for idempotency key. Please review preview with user before approving.",
+                },
+              };
+            }
+          }
+          throw insertErr;
+        }
+      };
+
+      if (b.idempotencyKey) {
+        const p = executeCreation();
+        creationLocks.set(b.idempotencyKey, p);
+        try {
+          const res = await p;
+          return json(res.body, res.status);
+        } finally {
+          creationLocks.delete(b.idempotencyKey);
+        }
+      } else {
+        const res = await executeCreation();
+        return json(res.body, res.status);
+      }
+    }
+
+    // chatgpt/posts/<id>/approve
+    if (path.length === 4 && path[0] === "chatgpt" && path[1] === "posts" && path[3] === "approve") {
+      const id = path[2];
+      const post = await getPost(id);
+      if (!post) return notFound();
+
+      if (post.status === "posted") {
+        return json({ error: "Post has already been published to Facebook." }, 400);
+      }
+
+      const parsed = ApproveChatGPTPostBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success || !parsed.data.userConfirmed) {
+        return json(
+          { error: "Explicit user confirmation (userConfirmed: true) is required to approve the post." },
+          400
+        );
+      }
+
+      const settings = await getSettings();
+      const pageId = post.page_id ?? settings.default_page_id;
+      if (!pageId) {
+        return json({ error: "Destination Facebook Page is not configured." }, 409);
+      }
+
+      const currentHash = computePostContentHash({
+        postId: post.id,
+        title: post.title,
+        description: post.description,
+        hashtags: post.hashtags,
+        imageUrl: post.image_url,
+        pageId,
+        linkUrl: post.link_url,
+        utmSuffix: settings.utm_suffix,
+      });
+
+      if (parsed.data.contentHash !== currentHash) {
+        return json(
+          {
+            error:
+              "Content hash mismatch. Post content has been modified since review or does not match staged copy.",
+          },
+          400
+        );
+      }
+
+      // Server-enforced human approval verification:
+      // The post MUST have been explicitly reviewed and approved in the authenticated dashboard.
+      if (!post.approved_by_user || !post.approved_at || !post.approval_content_hash) {
+        return json(
+          {
+            error:
+              "This post has not been approved in the authenticated dashboard. " +
+              "A human administrator must review and approve the post in the dashboard at reviewUrl before an approval token can be minted.",
+            reviewUrl: `/dashboard/queue?post=${post.id}`,
+            requiresDashboardApproval: true,
+          },
+          403
+        );
+      }
+
+      if (post.approval_content_hash !== currentHash) {
+        return json(
+          {
+            error:
+              "Post content has been modified since it was approved in the dashboard. Please re-review and approve in the dashboard.",
+            reviewUrl: `/dashboard/queue?post=${post.id}`,
+          },
+          409
+        );
+      }
+
+      try {
+        const { token, expiresAt } = await issueApprovalToken({
+          postId: post.id,
+          contentHash: currentHash,
+          ttlSeconds: 600,
+        });
+
+        return json({
+          approved: true,
+          postId: post.id,
+          approvalToken: token,
+          expiresAt: new Date(expiresAt).toISOString(),
+          reviewUrl: `/dashboard/queue?post=${post.id}`,
+          message:
+            "Post explicitly approved by user. You may now call POST /api/chatgpt/posts/{id}/publish with this single-use approvalToken before it expires (10 minutes).",
+        });
+      } catch (err) {
+        if (err instanceof StoragePersistenceError) {
+          return json({ error: err.message }, err.status);
+        }
+        throw err;
+      }
+    }
+
+    // chatgpt/posts/<id>/publish
+    if (path.length === 4 && path[0] === "chatgpt" && path[1] === "posts" && path[3] === "publish") {
+      const id = path[2];
+      const post = await getPost(id);
+      if (!post) return notFound();
+
+      // If already posted, return success idempotently
+      if (post.status === "posted") {
+        return json({
+          success: true,
+          postId: post.id,
+          status: "posted",
+          facebookPostId: post.facebook_post_id,
+          facebookPostUrl: post.facebook_post_id ? facebookPostUrl(post.facebook_post_id) : null,
+          postedAt: post.posted_at,
+          message: "Post has already been published.",
+        });
+      }
+
+      const parsed = PublishChatGPTPostBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: "approvalToken is required to publish." }, 400);
+      }
+
+      // Block automatic retries on posts with uncertain publication outcomes (e.g. timeouts)
+      if (post.status === "failed" && post.error_message?.includes("[UNCERTAIN_OUTCOME]")) {
+        if (!parsed.data.forceRetry) {
+          return json(
+            {
+              error:
+                "This post previously encountered an uncertain timeout. The photo may already have been published to Facebook. " +
+                "Automatic retries are blocked to prevent duplicate posts. Please verify your Facebook Page before retrying. " +
+                "If confirmed not published, supply forceRetry: true to retry publishing.",
+            },
+            409
+          );
+        }
+      }
+
+      const settings = await getSettings();
+      const pageId = post.page_id ?? settings.default_page_id;
+      if (!pageId || !settings.default_page_token) {
+        return json({ error: "Default Facebook Page is not configured or token is missing." }, 409);
+      }
+
+      // Cryptographically verify and conditionally consume the approval token against current post content
+      const currentHash = computePostContentHash({
+        postId: post.id,
+        title: post.title,
+        description: post.description,
+        hashtags: post.hashtags,
+        imageUrl: post.image_url,
+        pageId,
+        linkUrl: post.link_url,
+        utmSuffix: settings.utm_suffix,
+      });
+
+      const approvalCheck = await verifyAndConsumeApprovalToken(
+        parsed.data.approvalToken,
+        post.id,
+        currentHash,
+        { consume: !parsed.data.dryRun }
+      );
+
+      if (!approvalCheck.valid) {
+        return json(
+          {
+            error:
+              approvalCheck.reason ||
+              "Invalid, expired, reused, or unapproved token. Explicit user approval is required to publish.",
+          },
+          403
+        );
+      }
+
+      try {
+        const published = await publishPostNow(post.id, {
+          dryRun: parsed.data.dryRun,
+          forceRetry: parsed.data.forceRetry,
+        });
+
+        // Completely non-destructive dry-run: return simulation metadata without DB changes
+        if (parsed.data.dryRun) {
+          return json({
+            success: true,
+            simulated: true,
+            postId: post.id,
+            status: post.status, // Still in draft
+            simulatedFacebookPostId: published.simulatedFacebookPostId,
+            simulatedFacebookPostUrl: published.simulatedFacebookPostUrl,
+            message:
+              "Dry-run simulation succeeded. The post remains in draft state, database was not modified, and no Facebook Graph API calls were made.",
+          });
+        }
+
+        if (published.status === "failed") {
+          return json({ error: published.error_message || "Facebook publishing failed." }, 502);
+        }
+
+        return json({
+          success: true,
+          postId: published.id,
+          status: "posted",
+          facebookPostId: published.facebook_post_id,
+          facebookPostUrl: published.facebook_post_id
+            ? facebookPostUrl(published.facebook_post_id)
+            : null,
+          postedAt: published.posted_at,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Publishing failed.";
+        if (msg.includes("Concurrent publishing detected")) {
+          // Compensate: attempt to safely release token ONLY if the post has not already been published
+          // and another request is not actively publishing it.
+          const parts = parsed.data.approvalToken.split(".");
+          if (parts[0]) {
+            try {
+              const p = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf-8"));
+              if (p?.nonce) {
+                const freshPost = await getPost(post.id);
+                await releaseUnpublishedApprovalToken(p.nonce, post.id, {
+                  postStatus: freshPost?.status,
+                });
+              }
+            } catch {}
+          }
+          return json({ error: msg }, 409);
+        }
+        return json({ error: msg }, 502);
+      }
+    }
+
     if (route === "facebook/disconnect") {
       await updateSettings({
         facebook_user_token: null,
@@ -501,7 +1046,7 @@ const SettingsBody = z.object({
   posting_hours: z.array(z.number().int().min(0).max(23)).min(1).max(24).optional(),
   timezone: z.string().min(1).max(64).optional(),
   topic_source: z.enum(["mine", "trending", "mixed"]).optional(),
-  system_prompt: z.string().max(4000).nullable().optional(),
+  system_prompt: z.string().max(10000).nullable().optional(),
   ai_provider: z.enum(["gemini", "groq", "openai", "openrouter", "auto"]).optional(),
   gemini_api_key: z.string().trim().nullable().optional(),
   groq_api_key: z.string().trim().nullable().optional(),
@@ -542,6 +1087,23 @@ export async function PATCH(req: Request, ctx: Ctx) {
       const parsed = SettingsBody.safeParse(await req.json().catch(() => null));
       if (!parsed.success) return json({ error: "Invalid settings payload." }, 400);
       try {
+        if (parsed.data.utm_suffix !== undefined) {
+          const currentSettings = await getSettings();
+          const oldSuffix = (currentSettings.utm_suffix || "").trim();
+          const newSuffix = (parsed.data.utm_suffix || "").trim();
+          if (oldSuffix !== newSuffix) {
+            // Global UTM suffix modified: invalidate approval on any unposted posts
+            await supabaseAdmin()
+              .from("posts")
+              .update({
+                approved_by_user: false,
+                approved_at: null,
+                approval_content_hash: null,
+              })
+              .neq("status", "posted")
+              .eq("approved_by_user", true);
+          }
+        }
         return json(await publicSettings(await updateSettings(parsed.data)));
       } catch (err) {
         // Installs made before topics existed lack the column until
@@ -573,6 +1135,13 @@ export async function PATCH(req: Request, ctx: Ctx) {
       if (!parsed.success) return json({ error: "Invalid update payload." }, 400);
       const b = parsed.data;
 
+      const contentChanged =
+        (b.title !== undefined && b.title !== existing.title) ||
+        (b.description !== undefined && b.description !== existing.description) ||
+        (b.hashtags !== undefined && JSON.stringify(b.hashtags) !== JSON.stringify(existing.hashtags)) ||
+        (b.linkUrl !== undefined && (b.linkUrl || null) !== (existing.link_url || null)) ||
+        (b.pageId !== undefined && b.pageId !== existing.page_id);
+
       const updated = await updatePostRecord(id, {
         ...(b.title !== undefined && { title: b.title }),
         ...(b.description !== undefined && { description: b.description }),
@@ -582,6 +1151,11 @@ export async function PATCH(req: Request, ctx: Ctx) {
         ...(b.pageName !== undefined && { page_name: b.pageName }),
         ...(b.scheduledAt !== undefined && { scheduled_at: b.scheduledAt }),
         ...(b.status !== undefined && { status: b.status }),
+        ...(contentChanged && {
+          approved_by_user: false,
+          approved_at: null,
+          approval_content_hash: null,
+        }),
       });
 
       return json({ post: updated });

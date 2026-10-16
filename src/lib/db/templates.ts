@@ -1,6 +1,27 @@
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { PostTemplate } from "@/lib/types";
 
+interface TemplateDbRow {
+  id: string;
+  name: string;
+  ratio: PostTemplate["ratio"];
+  width: number;
+  height: number;
+  background_type?: PostTemplate["backgroundType"];
+  background_url?: string | null;
+  background_gradient?: string | null;
+  background_color?: string | null;
+  overlay_opacity?: number | string | null;
+  logo_url?: string | null;
+  logo_position?: PostTemplate["logoPosition"];
+  logo_size?: number | string | null;
+  logo_opacity?: number | string | null;
+  show_logo_backdrop?: boolean | null;
+  text_elements?: PostTemplate["textElements"] | null;
+  category?: string | null;
+  created_at?: string;
+}
+
 export async function listTemplates(): Promise<PostTemplate[]> {
   try {
     const { data, error } = await supabaseAdmin()
@@ -14,7 +35,7 @@ export async function listTemplates(): Promise<PostTemplate[]> {
       return [];
     }
 
-    return (data ?? []).map((row: any) => ({
+    return ((data ?? []) as TemplateDbRow[]).map((row) => ({
       id: row.id,
       name: row.name,
       ratio: row.ratio,

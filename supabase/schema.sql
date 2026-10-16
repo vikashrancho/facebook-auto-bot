@@ -60,6 +60,9 @@ create table if not exists posts (
   posted_at timestamptz,
   facebook_post_id text,
   error_message text,
+  approved_by_user boolean not null default false,
+  approved_at timestamptz,
+  approval_content_hash text,
   created_at timestamptz not null default now()
 );
 
@@ -150,3 +153,7 @@ alter table templates add column if not exists logo_position text default 'top-r
 alter table templates add column if not exists logo_size integer default 120;
 alter table templates add column if not exists logo_opacity numeric default 1.0;
 alter table templates add column if not exists show_logo_backdrop boolean default false;
+
+-- Enforces concurrency-safe uniqueness for ChatGPT Action idempotency keys
+create unique index if not exists posts_chatgpt_idempotency_idx on posts (topic) where topic like 'chatgpt:%';
+

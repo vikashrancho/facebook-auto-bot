@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Rocket, Trash, PencilSimple, X, Check } from "@phosphor-icons/react/dist/ssr";
+import { Rocket, Trash, PencilSimple, X, Check, ShieldCheck } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
@@ -42,6 +42,21 @@ export default function QueuePage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  async function approvePost(id: string) {
+    setBusyId(id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/posts/${id}/approve`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to approve post.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to approve post.");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function postNow(id: string) {
     setBusyId(id);
@@ -133,6 +148,15 @@ export default function QueuePage() {
                   <div className="flex items-center gap-2">
                     <p className="truncate font-medium text-foreground">{post.title}</p>
                     <StatusBadge status={post.status} />
+                    {post.approved_by_user ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                        <ShieldCheck size={12} weight="fill" /> Approved
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                        Unapproved
+                      </span>
+                    )}
                   </div>
                   <p className="mt-0.5 truncate text-sm text-muted-foreground">{post.description}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
@@ -173,6 +197,17 @@ export default function QueuePage() {
                 </div>
 
                 <div className="flex shrink-0 gap-2">
+                  {!post.approved_by_user && post.status !== "posted" && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                      onClick={() => approvePost(post.id)}
+                      disabled={busyId === post.id}
+                    >
+                      <ShieldCheck size={14} weight="fill" /> Approve
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="secondary"

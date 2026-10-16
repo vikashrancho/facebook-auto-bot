@@ -4,6 +4,7 @@ import type { PostStatus } from "@/lib/types";
 const STATUS_STYLES: Record<PostStatus, string> = {
   draft: "bg-surface-2 text-muted-foreground",
   scheduled: "bg-warning/15 text-warning",
+  publishing: "bg-info/15 text-info",
   posted: "bg-success/15 text-success",
   failed: "bg-destructive/15 text-destructive",
 };
@@ -11,6 +12,7 @@ const STATUS_STYLES: Record<PostStatus, string> = {
 const STATUS_LABEL: Record<PostStatus, string> = {
   draft: "Draft",
   scheduled: "Scheduled",
+  publishing: "Publishing...",
   posted: "Posted",
   failed: "Failed",
 };

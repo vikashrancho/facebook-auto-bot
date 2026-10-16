@@ -1,6 +1,6 @@
 export type ImageSource = "ai" | "stock";
 export type ImageSourcePref = "ai" | "stock" | "mixed";
-export type PostStatus = "draft" | "scheduled" | "posted" | "failed";
+export type PostStatus = "draft" | "scheduled" | "publishing" | "posted" | "failed";
 
 /**
  * Where autopilot gets its subjects. "mine" rotates through the owner's own
@@ -78,6 +78,9 @@ export interface Post {
   facebook_post_id: string | null;
   error_message: string | null;
   created_at: string;
+  approved_by_user?: boolean;
+  approved_at?: string | null;
+  approval_content_hash?: string | null;
 }
 
 export interface PageCache {
@@ -178,13 +181,24 @@ export const FACEBOOK_ASPECT_RATIOS: Record<FacebookAspectRatio, AspectRatioConf
   },
 };
 
+export type TemplateFontFamily =
+  | "Inter"
+  | "Outfit"
+  | "Montserrat"
+  | "Poppins"
+  | "Roboto"
+  | "Playfair Display"
+  | "Merriweather"
+  | "Bebas Neue"
+  | "Impact";
+
 export interface TemplateTextElement {
   id: string;
   type: "badge" | "headline" | "subtext" | "footer" | "custom";
   text: string;
   fontSize: number; // in px at base canvas scale
   fontWeight: "normal" | "600" | "bold" | "800";
-  fontFamily: "Inter" | "Montserrat" | "Merriweather" | "Impact" | "Outfit";
+  fontFamily: TemplateFontFamily;
   color: string;
   align: "left" | "center" | "right";
   yOffset: number; // percentage from top (0 - 100)

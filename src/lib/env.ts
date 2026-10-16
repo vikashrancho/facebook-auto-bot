@@ -78,6 +78,11 @@ export const env = {
     return optional("CRON_SECRET");
   },
 
+  // ChatGPT & M2M Integration
+  get integrationApiKeyOptional() {
+    return optional("INTEGRATION_API_KEY");
+  },
+
   /**
    * Origin this deployment is reachable at, used to build redirects back into
    * the dashboard. Vercel injects VERCEL_PROJECT_PRODUCTION_URL on every
