@@ -56,6 +56,55 @@
         }
       }
     },
+    "/api/chatgpt/images": {
+      "post": {
+        "operationId": "importChatGPTImage",
+        "summary": "Import or generate image for Facebook post",
+        "description": "Uploads image bytes, imports from an approved HTTPS host, or generates an image. Returns a verified Supabase Storage public URL.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportImageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Image successfully ingested, verified, and hosted in Supabase Storage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportImageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid image format, unapproved host, SSRF blocked, or missing input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chatgpt/posts": {
       "post": {
         "operationId": "createChatGPTPost",
@@ -375,6 +424,47 @@
           "facebookPageConfigured": {
             "type": "boolean",
             "example": true
+          }
+        }
+      },
+      "ImportImageRequest": {
+        "type": "object",
+        "properties": {
+          "imageUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "HTTPS URL of the image from an approved host.",
+            "example": "https://files.oaiusercontent.com/file-sample.png"
+          },
+          "imageBase64": {
+            "type": "string",
+            "description": "Raw base64-encoded image string (PNG, JPEG, or WebP)."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Topic or visual prompt for AI image generation fallback.",
+            "example": "Stock market investing modern graphic"
+          }
+        }
+      },
+      "ImportImageResponse": {
+        "type": "object",
+        "required": ["url", "verified", "source"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Verified permanent Supabase Storage public HTTPS URL.",
+            "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.jpg"
+          },
+          "verified": {
+            "type": "boolean",
+            "example": true
+          },
+          "source": {
+            "type": "string",
+            "enum": ["import", "upload", "ai"],
+            "example": "import"
           }
         }
       },

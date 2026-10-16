@@ -824,6 +824,7 @@ async function runTests() {
     assert.strictEqual(parsed.openapi, "3.1.0");
     assert.ok(parsed.info?.title);
     assert.ok(parsed.paths["/api/health"]);
+    assert.ok(parsed.paths["/api/chatgpt/images"]);
     assert.ok(parsed.paths["/api/chatgpt/posts"]);
     assert.ok(parsed.paths["/api/chatgpt/posts/{id}/approve"]);
     assert.ok(parsed.paths["/api/chatgpt/posts/{id}"]);
@@ -1279,6 +1280,66 @@ async function runTests() {
     assert.strictEqual(res.status, 400);
     const body = await res.json();
     assert.ok(body.error?.includes("approved image-hosting domain allowlist"), `Expected error to mention allowlist, got: ${body.error}`);
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/images without Bearer auth returns HTTP 401 Unauthorized", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUrl: "https://files.oaiusercontent.com/test.png" }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 401, "Image import endpoint must require Bearer auth");
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/images with empty body returns HTTP 400", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("Either imageUrl"), `Expected requirement message, got: ${body.error}`);
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/images with unapproved image domain returns HTTP 400", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageUrl: "https://evil-unapproved-domain.com/hack.jpg" }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("approved image-hosting domain allowlist"), `Expected error to mention allowlist, got: ${body.error}`);
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/images with non-image base64 content returns HTTP 400", async () => {
+    const fakeHtmlBase64 = Buffer.from("<html><script>alert(1)</script></html>").toString("base64");
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageBase64: fakeHtmlBase64 }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("Invalid image format"), `Expected magic byte rejection, got: ${body.error}`);
   });
 
   console.log("\n=======================================================");

@@ -18,7 +18,7 @@ import {
   StoragePersistenceError,
 } from "@/lib/auth/integration";
 import { generateContent, DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/text";
-import { generateImage, ingestExternalImage, isImageHostAllowed } from "@/lib/ai/image";
+import { generateImage, ingestExternalImage, ingestImageBytes, isImageHostAllowed } from "@/lib/ai/image";
 import { getTrendingTopics } from "@/lib/trends";
 import {
   createPostRecord,
@@ -118,11 +118,12 @@ async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
   return auth === `Bearer ${env.cronSecret}` || url.searchParams.get("secret") === env.cronSecret;
 }
 
-const INTEGRATION_ROUTES = new Set(["health", "chatgpt/posts"]);
+const INTEGRATION_ROUTES = new Set(["health", "chatgpt/posts", "chatgpt/images"]);
 
 function isIntegrationRoute(route: string): boolean {
   if (INTEGRATION_ROUTES.has(route)) return true;
   if (route.startsWith("chatgpt/posts/")) return true;
+  if (route.startsWith("chatgpt/images/")) return true;
   return false;
 }
 
@@ -349,6 +350,24 @@ const CredentialsBody = z.object({
   // Empty string clears it, for an app that uses classic Facebook Login.
   configId: z.string().trim().max(64).optional(),
 });
+
+const ImportChatGPTImageBody = z
+  .object({
+    imageUrl: z
+      .string()
+      .trim()
+      .url("Invalid imageUrl format. Must be an absolute HTTPS URL.")
+      .refine((u) => u.startsWith("https://"), {
+        message: "Only secure HTTPS image URLs are permitted.",
+      })
+      .optional(),
+    imageBase64: z.string().trim().optional(),
+    prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(200).optional(),
+  })
+  .refine((data) => Boolean(data.imageUrl || data.imageBase64 || data.prompt), {
+    message:
+      "Either imageUrl (an approved HTTPS image URL), imageBase64 (base64-encoded image), or prompt (for AI image generation) is required.",
+  });
 
 const CreateChatGPTPostBody = z.object({
   title: z.string().trim().min(1, "title is required (1-120 characters).").max(120),
@@ -617,6 +636,37 @@ export async function POST(req: Request, ctx: Ctx) {
 
       const { data } = db.storage.from("post-images").getPublicUrl(path);
       return json({ url: data.publicUrl });
+    }
+
+    if (route === "chatgpt/images") {
+      const parsed = ImportChatGPTImageBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: parsed.error.issues[0]?.message ?? "Invalid image request." }, 400);
+      }
+      const b = parsed.data;
+
+      try {
+        if (b.imageUrl) {
+          const res = await ingestExternalImage(b.imageUrl);
+          return json({ url: res.url, verified: true, source: "import" }, 201);
+        }
+
+        if (b.imageBase64) {
+          const raw = b.imageBase64.replace(/^data:image\/[a-z]+;base64,/, "");
+          const buffer = Buffer.from(raw, "base64");
+          const res = await ingestImageBytes(buffer);
+          return json({ url: res.url, verified: true, source: "upload" }, 201);
+        }
+
+        if (b.prompt) {
+          const res = await generateImage(b.prompt, "ai");
+          return json({ url: res.url, verified: true, source: "ai" }, 201);
+        }
+
+        return json({ error: "No valid image input provided." }, 400);
+      } catch (err: any) {
+        return json({ error: err.message || "Failed to process image." }, 400);
+      }
     }
 
     if (route === "chatgpt/posts") {
