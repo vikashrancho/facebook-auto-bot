@@ -29,5 +29,5 @@ export const config = {
   // Everything except static assets, images, and the API's own auth routes
   // (login/logout must stay reachable to establish/clear the session, and
   // the cron + oauth-callback routes authenticate themselves).
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|openapi.json|api/).*)"],
 };
