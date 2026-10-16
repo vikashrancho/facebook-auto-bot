@@ -60,7 +60,7 @@
       "post": {
         "operationId": "createChatGPTPost",
         "summary": "Stage a generated post for user review",
-        "description": "Accepts post copy (title hook, description, hashtags) and an HTTPS image URL from an approved provider (such as OpenAI DALL-E). Ingests and re-hosts the image in Supabase Storage and stages the post in pending_review status. Returns post details and contentHash. Does NOT issue an approval token and does NOT publish to Facebook.",
+        "description": "Create a Facebook post draft with the supplied content and image. Returns the post ID, content hash, and review URL. Does not publish to Facebook.",
         "requestBody": {
           "required": true,
           "content": {
@@ -252,7 +252,7 @@
       "post": {
         "operationId": "publishChatGPTPost",
         "summary": "Publish an approved post to Facebook",
-        "description": "Publishes a previously staged and user-approved post to the connected default Facebook Page. Requires a valid, unexpired, single-use approvalToken issued by POST /api/chatgpt/posts/{id}/approve. Verifies that the post content has not been altered since approval and atomically consumes the token upon real publication. Supports completely non-destructive dry-run simulations which do not consume the token.",
+        "description": "Publishes an approved Facebook post using a valid single-use approval token. Use dryRun=true to simulate publication without posting to Facebook. Never bypass approval checks.",
         "x-openai-isConsequential": true,
         "parameters": [
           {
