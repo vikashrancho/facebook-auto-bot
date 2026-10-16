@@ -18,7 +18,7 @@ import {
   StoragePersistenceError,
 } from "@/lib/auth/integration";
 import { generateContent, DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/text";
-import { generateImage, ingestExternalImage } from "@/lib/ai/image";
+import { generateImage, ingestExternalImage, isImageHostAllowed } from "@/lib/ai/image";
 import { getTrendingTopics } from "@/lib/trends";
 import {
   createPostRecord,
@@ -351,10 +351,30 @@ const CredentialsBody = z.object({
 });
 
 const CreateChatGPTPostBody = z.object({
-  title: z.string().trim().min(1).max(120),
-  description: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1, "title is required (1-120 characters).").max(120),
+  description: z.string().trim().min(1, "description is required (1-500 characters).").max(500),
   hashtags: z.array(z.string().trim().min(1).max(50)).max(15).default([]),
-  imageUrl: z.string().url(),
+  imageUrl: z
+    .string({ message: "imageUrl is required." })
+    .trim()
+    .min(1, "imageUrl cannot be empty. An authentic HTTPS image URL from an approved OpenAI/DALL-E host is required.")
+    .url("Invalid imageUrl format. Must be a valid absolute HTTPS URL.")
+    .refine((url) => url.startsWith("https://"), {
+      message: "Only secure HTTPS image URLs are permitted.",
+    })
+    .refine(
+      (url) => {
+        try {
+          return isImageHostAllowed(new URL(url).hostname);
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          "Image host is not in the approved image-hosting domain allowlist (e.g. files.oaiusercontent.com, oaidalleapiprodscus.blob.core.windows.net).",
+      }
+    ),
   idempotencyKey: z.string().trim().min(1).max(128).optional(),
 });
 

@@ -1221,6 +1221,66 @@ async function runTests() {
     assert.strictEqual(res.status, 401, "ChatGPT approve route must reject session cookie without Bearer auth");
   });
 
+  await test("[Route-Level] POST /api/chatgpt/posts with empty imageUrl returns HTTP 400 with descriptive error", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Test Hook",
+        description: "Test Description",
+        imageUrl: "",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("imageUrl cannot be empty"), `Expected error to mention empty imageUrl, got: ${body.error}`);
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/posts with non-HTTPS imageUrl returns HTTP 400", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Test Hook",
+        description: "Test Description",
+        imageUrl: "http://files.oaiusercontent.com/image.png",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("HTTPS"), `Expected error to require HTTPS, got: ${body.error}`);
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/posts with unapproved image domain returns HTTP 400", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Test Hook",
+        description: "Test Description",
+        imageUrl: "https://unauthorized-evil-domain.com/image.png",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("approved image-hosting domain allowlist"), `Expected error to mention allowlist, got: ${body.error}`);
+  });
+
   console.log("\n=======================================================");
   console.log(` Test Results: ${passedTests}/${totalTests} Passed (100%)`);
   console.log("=======================================================\n");
