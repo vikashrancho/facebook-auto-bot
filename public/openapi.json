@@ -59,8 +59,8 @@
     "/api/chatgpt/images": {
       "post": {
         "operationId": "importChatGPTImage",
-        "summary": "Import attached image, upload bytes, or generate image for Facebook post",
-        "description": "Imports an attached image via openaiFileIdRefs, an approved HTTPS imageUrl, or base64 bytes. If no image is attached or supplied, generates an image from topic prompt. Stores original bytes in Supabase Storage and returns a verified public HTTPS URL.",
+        "summary": "Import attached image or external image for Facebook post",
+        "description": "Imports an attached image via openaiFileIdRefs, an approved HTTPS imageUrl, or base64 bytes. Stores original bytes in Supabase Storage and returns a verified public HTTPS URL. Does not generate new images or substitute missing images.",
         "requestBody": {
           "required": true,
           "content": {
@@ -105,11 +105,70 @@
         }
       }
     },
+    "/api/chatgpt/images/generate": {
+      "post": {
+        "operationId": "generateChatGPTImage",
+        "summary": "Generate image from topic prompt when no image is supplied",
+        "description": "Generates an image from a topic prompt for Facebook posts when the user does not provide an image. Do not call this operation if the user has provided or attached an image.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateImageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Image successfully generated, verified, and hosted in Supabase Storage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateImageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid prompt or bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Image generation or storage failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chatgpt/posts": {
       "post": {
         "operationId": "createChatGPTPost",
         "summary": "Stage a generated post for user review",
-        "description": "Stages a Facebook post draft with content and hosted image URL. First call importChatGPTImage to host the image, then pass the public URL here. Returns post ID and review URL. Does not publish to Facebook.",
+        "description": "Stages a Facebook post draft with content and hosted image URL. Pass the verified public URL from importChatGPTImage or generateChatGPTImage. Returns post ID and review URL. Does not publish to Facebook.",
         "requestBody": {
           "required": true,
           "content": {
@@ -465,11 +524,44 @@
           "imageBase64": {
             "type": "string",
             "description": "Raw base64-encoded image string or data URI (PNG, JPEG, or WebP)."
-          },
+          }
+        }
+      },
+      "GenerateImageRequest": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
           "prompt": {
             "type": "string",
-            "description": "Topic prompt for backend AI image generation. Use ONLY when the user does not provide or attach an existing image.",
-            "example": "Stock market investing modern graphic"
+            "minLength": 2,
+            "maxLength": 500,
+            "description": "Topic description for server-side image generation when the user does not supply an image.",
+            "example": "Professional photography of modern workspace with laptop and coffee"
+          }
+        }
+      },
+      "GenerateImageResponse": {
+        "type": "object",
+        "required": ["url", "verified", "source"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Verified permanent Supabase Storage public HTTPS URL hosting the generated image.",
+            "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.jpg"
+          },
+          "verified": {
+            "type": "boolean",
+            "example": true
+          },
+          "source": {
+            "type": "string",
+            "enum": ["ai", "stock"],
+            "example": "ai"
+          },
+          "message": {
+            "type": "string",
+            "example": "Image generated, verified, and hosted in Supabase Storage."
           }
         }
       },
@@ -546,7 +638,7 @@
             "type": "string",
             "format": "uri",
             "minLength": 1,
-            "description": "Verified public HTTPS URL of the hosted image in Supabase Storage (returned by importChatGPTImage) or an approved external HTTPS host.",
+            "description": "Verified public HTTPS URL of the hosted image in Supabase Storage (returned by importChatGPTImage or generateChatGPTImage) or an approved external HTTPS host.",
             "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.jpg"
           },
           "openaiFileIdRefs": {
@@ -570,13 +662,6 @@
                 }
               }
             }
-          },
-          "imagePrompt": {
-            "type": "string",
-            "minLength": 2,
-            "maxLength": 500,
-            "description": "Visual scene description for automated server-side generation fallback if imageUrl is not provided.",
-            "example": "Professional modern photography of productive workspace with laptop and coffee"
           },
           "idempotencyKey": {
             "type": "string",

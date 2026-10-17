@@ -93,7 +93,7 @@ import {
   mockStorageMap,
 } from "../src/lib/ai/image";
 import type { Post } from "../src/lib/types";
-import { POST as apiRoutePOST } from "../src/app/api/[...path]/route";
+import { POST as apiRoutePOST, GET as apiRouteGET } from "../src/app/api/[...path]/route";
 
 let totalTests = 0;
 let passedTests = 0;
@@ -1929,7 +1929,123 @@ async function runTests() {
     assert.strictEqual(createReq.properties.openaiFileIdRefs.type, "array");
   });
 
-  // Restore global fetch
+  await test("POST /api/chatgpt/images/generate successfully generates image via dedicated operation", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images/generate", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: "Futuristic digital economy chart with neon lights",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images", "generate"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.source, "ai");
+    assert.strictEqual(body.verified, true);
+    assert.ok(body.url.startsWith("https://"));
+    assert.ok(pollinationsCallCount > 0, "Pollinations.ai must be called by dedicated generate endpoint");
+  });
+
+  await test("POST /api/chatgpt/posts rejects post staging when only prompt is passed (no silent generation fallback)", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Prompt Only Staging Attempt",
+        description: "Attempting to stage a post without an imported image URL.",
+        imagePrompt: "dark book, candles, and coins",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_INPUT_MISSING"), `Expected IMAGE_INPUT_MISSING, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations must never be invoked silently by createChatGPTPost");
+  });
+
+  await test("Regression: Preview URL, database saved image_url, and retrieved image bytes all match exact original supplied bytes without substitution", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+
+    // 1. First import image via importChatGPTImage
+    const importReq = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "stock_chart_green_plant.png",
+            id: "file-stock-chart-green-plant-001",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+          },
+        ],
+      }),
+    });
+    const importCtx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const importRes = await apiRoutePOST(importReq, importCtx);
+    assert.strictEqual(importRes.status, 201);
+    const importBody = await importRes.json();
+    const hostedUrl = importBody.url;
+    assert.strictEqual(importBody.sha256, uniqueVisualHash);
+
+    // 2. Stage draft post using hostedUrl
+    const postReq = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Stock Chart & Green Plant Verified Post",
+        description: "Exact alignment between chat preview, database record, and storage bytes.",
+        imageUrl: hostedUrl,
+        idempotencyKey: "aligned_preview_test_" + Date.now(),
+      }),
+    });
+    const postCtx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const postRes = await apiRoutePOST(postReq, postCtx);
+    assert.strictEqual(postRes.status, 201);
+    const postBody = await postRes.json();
+
+    // Verify response imageUrl matches import imageUrl
+    assert.strictEqual(postBody.imageUrl, hostedUrl, "Post response imageUrl must match imported hostedUrl");
+
+    // Verify database record has the identical imageUrl via GET /api/chatgpt/posts/{id}
+    const getReq = new Request(`http://localhost:3000/api/chatgpt/posts/${postBody.postId}`, {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+      },
+    });
+    const getCtx = { params: Promise.resolve({ path: ["chatgpt", "posts", postBody.postId] }) };
+    const getRes = await apiRouteGET(getReq, getCtx);
+    assert.strictEqual(getRes.status, 200);
+    const getBody = await getRes.json();
+    assert.strictEqual(getBody.imageUrl, hostedUrl, "Database image_url via GET must match imported hostedUrl");
+
+    // Verify stored object in storage has exact source bytes
+    const stored = getMockStoredImage(hostedUrl);
+    assert.ok(stored, "Stored image must exist");
+    assert.strictEqual(stored.sha256, uniqueVisualHash, "Stored image SHA-256 must match source image bytes");
+    assert.deepStrictEqual(stored.buffer, uniqueVisualImageBuffer, "Stored buffer must be byte-for-byte identical");
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations must never be invoked during import or staging");
+  });
   globalThis.fetch = originalFetch;
 
   console.log("\n=======================================================");

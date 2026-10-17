@@ -386,6 +386,10 @@ const ImportChatGPTImageBody = z
     }
   );
 
+const GenerateChatGPTImageBody = z.object({
+  prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(500),
+});
+
 const CreateChatGPTPostBody = z
   .object({
     title: z.string().trim().min(1, "title is required (1-120 characters).").max(120),
@@ -414,19 +418,17 @@ const CreateChatGPTPostBody = z
       )
       .optional(),
     openaiFileIdRefs: z.array(z.any()).optional(),
-    imagePrompt: z.string().trim().min(2, "imagePrompt must be at least 2 characters.").max(500).optional(),
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
   })
   .refine(
     (data) =>
       Boolean(
         (data.openaiFileIdRefs && data.openaiFileIdRefs.length > 0) ||
-        data.imageUrl ||
-        data.imagePrompt
+        data.imageUrl
       ),
     {
       message:
-        "IMAGE_INPUT_MISSING: Either imageUrl (a verified hosted image URL from importChatGPTImage), openaiFileIdRefs (attached image), or imagePrompt (for automated backend generation) is required.",
+        "IMAGE_INPUT_MISSING: Either imageUrl (a verified hosted image URL from importChatGPTImage) or openaiFileIdRefs (attached image) is required.",
     }
   );
 
@@ -671,6 +673,27 @@ export async function POST(req: Request, ctx: Ctx) {
       return json({ url: data.publicUrl });
     }
 
+    if (route === "chatgpt/images/generate") {
+      const parsed = GenerateChatGPTImageBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: parsed.error.issues[0]?.message ?? "Invalid generation prompt." }, 400);
+      }
+      try {
+        const res = await generateImage(parsed.data.prompt, "ai");
+        return json(
+          {
+            url: res.url,
+            verified: true,
+            source: "ai",
+            message: "Image generated, verified, and hosted in Supabase Storage.",
+          },
+          201
+        );
+      } catch (err: any) {
+        return json({ error: `IMAGE_GENERATION_FAILED: ${err.message || "Failed to generate image."}` }, 500);
+      }
+    }
+
     if (route === "chatgpt/images") {
       const parsed = ImportChatGPTImageBody.safeParse(await req.json().catch(() => null));
       if (!parsed.success) {
@@ -833,14 +856,11 @@ export async function POST(req: Request, ctx: Ctx) {
           } else if (b.imageUrl) {
             const res = await ingestExternalImage(b.imageUrl);
             ingested = { url: res.url, source: "ai", sha256: res.sha256 };
-          } else if (b.imagePrompt) {
-            const res = await generateImage(b.imagePrompt, "ai");
-            ingested = { url: res.url, source: res.source };
           } else {
             return {
               status: 400,
               body: {
-                error: "IMAGE_INPUT_MISSING: An image URL, openaiFileIdRefs, or imagePrompt is required to create a draft post.",
+                error: "IMAGE_INPUT_MISSING: Either imageUrl (a verified hosted image URL from importChatGPTImage) or openaiFileIdRefs (attached image) is required.",
               },
             };
           }
