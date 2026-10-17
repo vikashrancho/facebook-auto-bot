@@ -109,7 +109,7 @@
       "post": {
         "operationId": "createChatGPTPost",
         "summary": "Stage a generated post for user review",
-        "description": "Create a Facebook post draft with the supplied content and hosted image URL. Recommended workflow: first call importChatGPTImage to host the image in Supabase Storage, then pass the returned public URL to this endpoint. Alternatively, provide imagePrompt for automated server-side generation. Returns the post ID, content hash, and review URL. Does not publish to Facebook and does not approve drafts.",
+        "description": "Stages a Facebook post draft with content and hosted image URL. First call importChatGPTImage to host the image, then pass the public URL here. Returns post ID and review URL. Does not publish to Facebook.",
         "requestBody": {
           "required": true,
           "content": {
