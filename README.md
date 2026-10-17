@@ -76,18 +76,19 @@ redeploy needed — and copy the redirect URI shown on that screen into your Met
 
 Then hit **Connect**, pick a Page, and you are running.
 
-### Better AI copy (optional, still free)
+### AI providers
 
-Pollinations' text endpoint now rejects anonymous callers, so without a key the app
-falls back to template copy — and says so in the UI rather than passing it off as AI
-output. A free key from either provider restores real generation:
+The app supports multiple AI providers for post text generation (Groq, Gemini, OpenAI, OpenRouter).
+Without an API key, the app gracefully falls back to template copy — and says so in the UI rather
+than passing it off as AI output. Add an API key to enable AI generation:
 
 | Variable | Get one at |
 | --- | --- |
 | `GROQ_API_KEY` | [console.groq.com/keys](https://console.groq.com/keys) |
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-
-Image generation stays keyless and works as-is.
+| `OPENAI_API_KEY` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `PEXELS_API_KEY` | [pexels.com/api](https://www.pexels.com/api/) |
 
 ### Posting more than once a day
 
@@ -120,5 +121,5 @@ npm run dev
 ## Stack
 
 Next.js 16 (App Router) · TypeScript · Tailwind v4 · Supabase (Postgres + Storage) ·
-Meta Graph API v26.0 · Groq / Gemini / Pollinations for text · Pollinations / Pexels for
+Meta Graph API v26.0 · Groq / Gemini / OpenAI / OpenRouter for text · OpenAI DALL-E / Pexels for
 images.

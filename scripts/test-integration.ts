@@ -1413,7 +1413,7 @@ async function runTests() {
     assert.strictEqual(isImageHostAllowed("cdn.openai.com"), true);
     assert.strictEqual(isImageHostAllowed("images.pexels.com"), true);
     assert.strictEqual(isImageHostAllowed("images.unsplash.com"), true);
-    assert.strictEqual(isImageHostAllowed("image.pollinations.ai"), true);
+    assert.strictEqual(isImageHostAllowed("image.pollinations.ai"), false, "Pollinations domain must be rejected");
     assert.strictEqual(isImageHostAllowed("attacker-site.com"), false);
   });
 
@@ -1613,20 +1613,32 @@ async function runTests() {
   ]);
   const uniqueVisualHash = crypto.createHash("sha256").update(uniqueVisualImageBuffer).digest("hex");
 
-  // Track Pollinations call count
+  // Track Pollinations call count (must remain 0) and AI Image Generation call count
   let pollinationsCallCount = 0;
+  let openAiImageGenCallCount = 0;
   const originalFetch = globalThis.fetch;
+  process.env.OPENAI_API_KEY = "mock-openai-key-dalle";
 
-  // Intercept fetch to serve mock download link and track any Pollinations AI calls
+  // Intercept fetch to serve mock download link, track DALL-E generation, and catch any Pollinations AI calls
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 
     if (urlStr.includes("pollinations.ai")) {
       pollinationsCallCount++;
-      return new Response(uniqueVisualImageBuffer, {
-        status: 200,
-        headers: { "Content-Type": "image/png" },
-      });
+      return new Response("Pollinations has been removed from this application", { status: 410 });
+    }
+
+    if (urlStr.includes("api.openai.com/v1/images/generations")) {
+      openAiImageGenCallCount++;
+      return new Response(
+        JSON.stringify({
+          data: [{ b64_json: uniqueVisualImageBuffer.toString("base64") }],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
     }
 
     if (urlStr === "https://files.oaiusercontent.com/test-user-attached-chart.png") {
@@ -1811,8 +1823,9 @@ async function runTests() {
     assert.strictEqual(pollinationsCallCount, 0, "Must NEVER call Pollinations as fallback when download fails");
   });
 
-  await test("A topic-only image-generation request still uses the existing Pollinations.ai feature", async () => {
+  await test("A topic-only image-generation request uses the AI generator and never calls Pollinations", async () => {
     pollinationsCallCount = 0;
+    openAiImageGenCallCount = 0;
     process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
     const req = new Request("http://localhost:3000/api/chatgpt/images", {
       method: "POST",
@@ -1830,7 +1843,8 @@ async function runTests() {
     const body = await res.json();
     assert.strictEqual(body.source, "ai");
     assert.strictEqual(body.verified, true);
-    assert.ok(pollinationsCallCount > 0, "Pollinations.ai must be called for topic-only generation");
+    assert.ok(openAiImageGenCallCount > 0, "AI generator must be called for topic-only generation");
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations.ai must never be called");
   });
 
   await test("POST /api/chatgpt/posts with openaiFileIdRefs preserves original image with unique visual content in draft", async () => {
@@ -1929,8 +1943,9 @@ async function runTests() {
     assert.strictEqual(createReq.properties.openaiFileIdRefs.type, "array");
   });
 
-  await test("POST /api/chatgpt/images/generate successfully generates image via dedicated operation", async () => {
+  await test("POST /api/chatgpt/images/generate successfully generates image via dedicated operation without Pollinations", async () => {
     pollinationsCallCount = 0;
+    openAiImageGenCallCount = 0;
     process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
     const req = new Request("http://localhost:3000/api/chatgpt/images/generate", {
       method: "POST",
@@ -1949,7 +1964,8 @@ async function runTests() {
     assert.strictEqual(body.source, "ai");
     assert.strictEqual(body.verified, true);
     assert.ok(body.url.startsWith("https://"));
-    assert.ok(pollinationsCallCount > 0, "Pollinations.ai must be called by dedicated generate endpoint");
+    assert.ok(openAiImageGenCallCount > 0, "AI generator must be called by dedicated generate endpoint");
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations.ai must never be called");
   });
 
   await test("POST /api/chatgpt/posts rejects post staging when only prompt is passed (no silent generation fallback)", async () => {

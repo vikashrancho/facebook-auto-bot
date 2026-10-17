@@ -53,8 +53,7 @@ export const env = {
     return optional("FACEBOOK_REDIRECT_URI");
   },
 
-  // Free-tier LLM keys. Both are optional: without either one the app falls
-  // back to the keyless Pollinations endpoint, and then to template copy.
+  // LLM API keys. If none are configured, the app falls back to template copy.
   get groqApiKey() {
     return optional("GROQ_API_KEY");
   },

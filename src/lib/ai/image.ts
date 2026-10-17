@@ -24,13 +24,46 @@ const PHOTO_STYLE =
   "professional photography, realistic scene, beautiful composition, natural lighting, high resolution, 8k, sharp focus, no watermark, no text, no logo, no collage, no borders";
 
 async function fetchAiImageBytes(prompt: string): Promise<Blob> {
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-    `${prompt}, ${PHOTO_STYLE}`
-  )}?width=${WIDTH}&height=${HEIGHT}&model=flux&nologo=true&seed=${Math.floor(Math.random() * 1_000_000)}`;
+  if (env.openaiApiKey) {
+    const res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.openaiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: "dall-e-3",
+        prompt: `${prompt}, ${PHOTO_STYLE}`,
+        n: 1,
+        size: "1024x1024",
+        response_format: "b64_json",
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
 
-  const res = await fetch(url, { signal: AbortSignal.timeout(35_000) });
-  if (!res.ok) throw new Error(`Pollinations image API ${res.status}`);
-  return res.blob();
+    if (res.ok) {
+      const data = await res.json();
+      const b64 = data.data?.[0]?.b64_json;
+      if (b64) {
+        const buffer = Buffer.from(b64, "base64");
+        return new Blob([buffer], { type: "image/png" });
+      }
+      const url = data.data?.[0]?.url;
+      if (url) {
+        const imgRes = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+        if (imgRes.ok) return imgRes.blob();
+      }
+    }
+  }
+
+  // If no OpenAI key configured or DALL-E fails, fall back to high-resolution stock photo (Pexels)
+  if (env.pexelsApiKey) {
+    return fetchStockImageBytes(prompt);
+  }
+
+  throw new Error(
+    "No image generation provider configured. Please provide an OPENAI_API_KEY for DALL-E 3 or PEXELS_API_KEY for stock photos."
+  );
 }
 
 async function fetchStockImageBytes(query: string): Promise<Blob> {
@@ -146,7 +179,6 @@ export function isImageHostAllowed(hostname: string): boolean {
     ".chatgpt.com",
     "images.pexels.com",
     "images.unsplash.com",
-    "image.pollinations.ai",
   ];
 
   for (const suffix of allowedSuffixes) {
@@ -562,7 +594,7 @@ export function isImageRef(ref: { name?: string; mimeType?: string; downloadLink
  * Ingests a file attached to Custom GPT via openaiFileIdRefs.
  * Selects the intended attached image, downloads original bytes without re-generation or watermark,
  * validates against SSRF/magic numbers, uploads to Supabase Storage, and verifies public accessibility.
- * Never falls back to Pollinations or any AI generator.
+ * Never falls back to image regeneration or other generators.
  */
 export async function ingestOpenAiFileRefs(fileRefs: unknown): Promise<IngestedImageResult> {
   if (!Array.isArray(fileRefs) || fileRefs.length === 0) {

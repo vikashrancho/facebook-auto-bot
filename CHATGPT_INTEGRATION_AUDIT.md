@@ -141,7 +141,7 @@ All endpoints are hosted on the route dispatcher: `src/app/api/[...path]/route.t
 ## 6. Image Handling & Compatibility
 
 ### Current Flow in Code
-1. **Generation:** When generating within the app, `fetchAiImageBytes` calls Pollinations AI or `fetchStockImageBytes` calls Pexels (`src/lib/ai/image.ts:L26-59`).
+1. **Generation:** When generating within the app, `fetchAiImageBytes` calls OpenAI DALL-E 3 or `fetchStockImageBytes` calls Pexels (`src/lib/ai/image.ts:L26-67`).
 2. **Re-hosting:** The image bytes are uploaded to Supabase Storage bucket `post-images` with a date-partitioned UUID path: `YYYY-MM-DD/<uuid>.jpg` (`src/lib/ai/image.ts:L95-108`).
 3. **Facebook Crawl:** The resulting Supabase public URL (`https://<project-ref>.supabase.co/storage/v1/object/public/post-images/...`) is supplied to Meta's `/{page-id}/photos` endpoint (`src/lib/facebook/client.ts:L137-149`).
 
@@ -179,7 +179,7 @@ The user requested two operational modes:
 | **Hardcoded Secrets** | **PASS** | No hardcoded tokens, passwords, or secrets exist in the git tracked files. | Entire repository |
 | **Secret Exposure in Responses** | **PASS** | `publicSettings()` explicitly strips `facebook_app_secret`, `facebook_user_token`, `default_page_token`, and all AI provider API keys before returning settings to clients. | `src/app/api/[...path]/route.ts:L129-159` |
 | **API Authentication** | **FAIL** (for integrations) | The API relies exclusively on the browser `pab_session` cookie. There is no API key or Bearer token mechanism for server-to-server callers like ChatGPT. | `src/app/api/[...path]/route.ts:L91-117` |
-| **Server-Side Request Forgery (SSRF)** | **FAIL** (if external URLs accepted) | Currently, external image downloads only fetch from fixed domains (Pollinations, Pexels). If a new endpoint is introduced to accept arbitrary image URLs from ChatGPT without validation, it could be exploited to query internal cloud metadata services (`169.254.169.254`) or local network resources. | `src/lib/ai/image.ts:L26-59` |
+| **Server-Side Request Forgery (SSRF)** | **FAIL** (if external URLs accepted) | Currently, external image downloads only fetch from fixed domains (OpenAI, Pexels, Unsplash). If a new endpoint is introduced to accept arbitrary image URLs from ChatGPT without validation, it could be exploited to query internal cloud metadata services (`169.254.169.254`) or local network resources. | `src/lib/ai/image.ts:L26-67` |
 | **Request Rate Limiting** | **PARTIAL** | Vercel provides baseline edge DDoS protection, but application-level rate limiting is absent. | N/A |
 | **Database Permissions** | **PASS** | Supabase database calls run through `supabaseAdmin()` using the server-side `SUPABASE_SERVICE_ROLE_KEY`. | `src/lib/supabase/server.ts:L7-14` |
 
@@ -296,5 +296,5 @@ A **ChatGPT Custom GPT Action** is strongly recommended over a Remote MCP server
 ## 13. Questions & Information Not Resolvable from Source Code
 
 1. **Deployment Target:** Do you plan to deploy this on **Vercel** (with a public HTTPS domain) for ChatGPT access, or do you intend to run it locally on your computer using a secure tunnel (e.g. **Cloudflare Tunnel** or **ngrok**)?
-2. **Image Generation Preference:** In ChatGPT, do you intend to have ChatGPT generate the image directly using DALL-E (passing an image URL to your app), or would you prefer ChatGPT to generate an optimized visual prompt and let your backend generate and host the image using its existing Pollinations/Pexels engine?
+2. **Image Generation Preference:** In ChatGPT, do you intend to have ChatGPT generate the image directly using DALL-E (passing an image URL to your app), or would you prefer ChatGPT to generate an optimized visual prompt and let your backend generate and host the image using its OpenAI DALL-E / Pexels engine?
 3. **Facebook Page Selection:** Should ChatGPT always default to whatever Facebook Page is currently marked active in your dashboard Settings, or should ChatGPT be able to list and choose between multiple Pages?

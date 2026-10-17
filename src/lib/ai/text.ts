@@ -3,7 +3,7 @@ import { getSettings } from "@/lib/db/settings";
 import type { ContentProvider, GeneratedContent } from "@/lib/types";
 
 /**
- * Facebook copy generation across LLM providers (Gemini, Groq, OpenAI, OpenRouter, Pollinations),
+ * Facebook copy generation across LLM providers (Gemini, Groq, OpenAI, OpenRouter),
  * tried in order until one returns usable JSON.
  */
 
@@ -50,7 +50,7 @@ function parseContent(raw: string): GeneratedContent {
   };
 }
 
-/** Shared call shape for OpenAI-compatible endpoints (Groq, OpenAI, OpenRouter, Pollinations). */
+/** Shared call shape for OpenAI-compatible endpoints (Groq, OpenAI, OpenRouter). */
 async function chatCompletion(
   url: string,
   model: string,
@@ -226,17 +226,6 @@ async function buildProviderChain(topic: string, customPrompt?: string): Promise
       ),
   };
 
-  const pollinationsAttempt: Attempt = {
-    provider: "pollinations",
-    run: () =>
-      chatCompletion(
-        "https://text.pollinations.ai/openai",
-        "openai-fast",
-        topic,
-        systemPrompt
-      ),
-  };
-
   // If a specific provider was chosen by user
   if (selectedProvider === "gemini" && geminiKey && geminiEnabled) {
     chain.push(geminiAttempt);
@@ -261,9 +250,6 @@ async function buildProviderChain(topic: string, customPrompt?: string): Promise
   if (openrouterKey && openrouterEnabled && !chain.includes(openrouterAttempt)) {
     chain.push(openrouterAttempt);
   }
-
-  // Free community fallback
-  chain.push(pollinationsAttempt);
 
   return chain;
 }

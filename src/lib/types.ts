@@ -96,7 +96,6 @@ export type ContentProvider =
   | "groq"
   | "openai"
   | "openrouter"
-  | "pollinations"
   | "template";
 
 export interface GeneratedContent {
