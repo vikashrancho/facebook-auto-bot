@@ -18,7 +18,13 @@ import {
   StoragePersistenceError,
 } from "@/lib/auth/integration";
 import { generateContent, DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/text";
-import { generateImage, ingestExternalImage, ingestImageBytes, isImageHostAllowed } from "@/lib/ai/image";
+import {
+  generateImage,
+  ingestExternalImage,
+  ingestImageBytes,
+  ingestOpenAiFileRefs,
+  isImageHostAllowed,
+} from "@/lib/ai/image";
 import { getTrendingTopics } from "@/lib/trends";
 import {
   createPostRecord,
@@ -56,7 +62,7 @@ import { OAUTH_STATE_COOKIE } from "@/lib/facebook/oauth-state";
 import { publishPostNow } from "@/lib/facebook/publish";
 import { maybeRunAutopilot } from "@/lib/autopilot";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { facebookPostUrl, type PostStatus } from "@/lib/types";
+import { facebookPostUrl, type PostStatus, type ImageSource } from "@/lib/types";
 
 /**
  * Every API endpoint lives in this one catch-all handler on purpose.
@@ -353,6 +359,7 @@ const CredentialsBody = z.object({
 
 const ImportChatGPTImageBody = z
   .object({
+    openaiFileIdRefs: z.array(z.any()).optional(),
     imageUrl: z
       .string()
       .trim()
@@ -365,10 +372,19 @@ const ImportChatGPTImageBody = z
     imageBase64: z.string().trim().min(1, "imageBase64 cannot be empty.").optional(),
     prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(500).optional(),
   })
-  .refine((data) => Boolean(data.imageUrl || data.imageBase64 || data.prompt), {
-    message:
-      "Either imageUrl (an approved HTTPS image URL), imageBase64 (base64-encoded image), or prompt (for AI image generation) is required.",
-  });
+  .refine(
+    (data) =>
+      Boolean(
+        (data.openaiFileIdRefs && data.openaiFileIdRefs.length > 0) ||
+        data.imageUrl ||
+        data.imageBase64 ||
+        data.prompt
+      ),
+    {
+      message:
+        "IMAGE_INPUT_MISSING: Either imageUrl (an approved HTTPS image URL), openaiFileIdRefs (attached image from ChatGPT), imageBase64, or prompt (for topic-only generation) is required.",
+    }
+  );
 
 const CreateChatGPTPostBody = z
   .object({
@@ -397,13 +413,22 @@ const CreateChatGPTPostBody = z
         }
       )
       .optional(),
+    openaiFileIdRefs: z.array(z.any()).optional(),
     imagePrompt: z.string().trim().min(2, "imagePrompt must be at least 2 characters.").max(500).optional(),
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
   })
-  .refine((data) => Boolean(data.imageUrl || data.imagePrompt), {
-    message:
-      "Either imageUrl (a verified hosted image URL from importChatGPTImage) or imagePrompt (for automated backend generation) is required.",
-  });
+  .refine(
+    (data) =>
+      Boolean(
+        (data.openaiFileIdRefs && data.openaiFileIdRefs.length > 0) ||
+        data.imageUrl ||
+        data.imagePrompt
+      ),
+    {
+      message:
+        "IMAGE_INPUT_MISSING: Either imageUrl (a verified hosted image URL from importChatGPTImage), openaiFileIdRefs (attached image), or imagePrompt (for automated backend generation) is required.",
+    }
+  );
 
 const ApproveChatGPTPostBody = z.object({
   userConfirmed: z.boolean(),
@@ -649,11 +674,32 @@ export async function POST(req: Request, ctx: Ctx) {
     if (route === "chatgpt/images") {
       const parsed = ImportChatGPTImageBody.safeParse(await req.json().catch(() => null));
       if (!parsed.success) {
-        return json({ error: parsed.error.issues[0]?.message ?? "Invalid image request." }, 400);
+        const msg = parsed.error.issues[0]?.message ?? "Invalid image request.";
+        const errorText = msg.startsWith("IMAGE_") ? msg : `IMAGE_INPUT_MISSING: ${msg}`;
+        return json({ error: errorText }, 400);
       }
       const b = parsed.data;
 
       try {
+        // Priority 1: User-attached image from Custom GPT via openaiFileIdRefs
+        if (b.openaiFileIdRefs && b.openaiFileIdRefs.length > 0) {
+          const res = await ingestOpenAiFileRefs(b.openaiFileIdRefs);
+          return json(
+            {
+              url: res.url,
+              verified: true,
+              source: "import",
+              sha256: res.sha256,
+              fileName: res.fileName,
+              mimeType: res.mimeType,
+              byteLength: res.byteLength,
+              message: "Attached image successfully verified, hosted in Supabase Storage, and exact bytes preserved.",
+            },
+            201
+          );
+        }
+
+        // Priority 2: Verified external HTTPS image URL
         if (b.imageUrl) {
           const res = await ingestExternalImage(b.imageUrl);
           return json(
@@ -661,12 +707,14 @@ export async function POST(req: Request, ctx: Ctx) {
               url: res.url,
               verified: true,
               source: "import",
+              sha256: res.sha256,
               message: "Image successfully verified and hosted in Supabase Storage.",
             },
             201
           );
         }
 
+        // Priority 3: Uploaded raw image bytes
         if (b.imageBase64) {
           const raw = b.imageBase64.replace(/^data:image\/[a-z0-9.+_-]+;base64,/i, "");
           const buffer = Buffer.from(raw, "base64");
@@ -676,12 +724,14 @@ export async function POST(req: Request, ctx: Ctx) {
               url: res.url,
               verified: true,
               source: "upload",
+              sha256: res.sha256,
               message: "Image successfully uploaded, verified, and hosted in Supabase Storage.",
             },
             201
           );
         }
 
+        // Priority 4: Topic-only AI generation request (only when NO image is supplied)
         if (b.prompt) {
           const res = await generateImage(b.prompt, "ai");
           return json(
@@ -695,9 +745,11 @@ export async function POST(req: Request, ctx: Ctx) {
           );
         }
 
-        return json({ error: "No valid image input provided." }, 400);
+        return json({ error: "IMAGE_INPUT_MISSING: No valid image input provided." }, 400);
       } catch (err: any) {
-        return json({ error: err.message || "Failed to process image." }, 400);
+        const message = err.message || "Failed to process image.";
+        const formatted = message.startsWith("IMAGE_") ? message : `IMAGE_IMPORT_FAILED: ${message}`;
+        return json({ error: formatted }, 400);
       }
     }
 
@@ -773,26 +825,32 @@ export async function POST(req: Request, ctx: Ctx) {
           };
         }
 
-        let ingested: { url: string };
+        let ingested: { url: string; source: ImageSource; sha256?: string };
         try {
-          if (b.imageUrl) {
-            ingested = await ingestExternalImage(b.imageUrl);
+          if (b.openaiFileIdRefs && b.openaiFileIdRefs.length > 0) {
+            const res = await ingestOpenAiFileRefs(b.openaiFileIdRefs);
+            ingested = { url: res.url, source: "ai", sha256: res.sha256 };
+          } else if (b.imageUrl) {
+            const res = await ingestExternalImage(b.imageUrl);
+            ingested = { url: res.url, source: "ai", sha256: res.sha256 };
           } else if (b.imagePrompt) {
-            ingested = await generateImage(b.imagePrompt, "ai");
+            const res = await generateImage(b.imagePrompt, "ai");
+            ingested = { url: res.url, source: res.source };
           } else {
             return {
               status: 400,
               body: {
-                error: "An image URL or imagePrompt is required to create a draft post.",
+                error: "IMAGE_INPUT_MISSING: An image URL, openaiFileIdRefs, or imagePrompt is required to create a draft post.",
               },
             };
           }
-        } catch (err) {
+        } catch (err: any) {
+          const message = err instanceof Error ? err.message : "Failed to import image.";
+          const formatted = message.startsWith("IMAGE_") ? message : `IMAGE_IMPORT_FAILED: ${message}`;
           return {
             status: 400,
             body: {
-              error:
-                err instanceof Error ? err.message : "Failed to import image from external URL.",
+              error: formatted,
             },
           };
         }
@@ -804,7 +862,7 @@ export async function POST(req: Request, ctx: Ctx) {
             description: b.description,
             hashtags: b.hashtags,
             image_url: ingested.url,
-            image_source: "ai",
+            image_source: ingested.source,
             link_url: null,
             page_id: settings.default_page_id,
             page_name: settings.default_page_name,

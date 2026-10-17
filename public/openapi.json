@@ -59,8 +59,8 @@
     "/api/chatgpt/images": {
       "post": {
         "operationId": "importChatGPTImage",
-        "summary": "Import, upload, or generate image for Facebook post",
-        "description": "Uploads image bytes (base64), imports from an approved HTTPS host (with safe redirect defense), or generates an image using AI fallback. Stores the accepted image in Supabase Storage and returns a verified public HTTPS URL. Recommended first step before creating a post draft.",
+        "summary": "Import attached image, upload bytes, or generate image for Facebook post",
+        "description": "Imports an attached image via openaiFileIdRefs, an approved HTTPS imageUrl, or base64 bytes. If no image is attached or supplied, generates an image from topic prompt. Stores original bytes in Supabase Storage and returns a verified public HTTPS URL.",
         "requestBody": {
           "required": true,
           "content": {
@@ -430,10 +430,36 @@
       "ImportImageRequest": {
         "type": "object",
         "properties": {
+          "openaiFileIdRefs": {
+            "type": "array",
+            "description": "Array of file-reference objects from ChatGPT when the user attaches an image. The backend immediately downloads the original bytes from download_link and hosts them in Supabase Storage without modification.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Original file name."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "OpenAI internal file identifier."
+                },
+                "mime_type": {
+                  "type": "string",
+                  "description": "MIME type (e.g. image/png, image/jpeg, image/webp)."
+                },
+                "download_link": {
+                  "type": "string",
+                  "format": "uri",
+                  "description": "Temporary secure HTTPS download link provided by OpenAI."
+                }
+              }
+            }
+          },
           "imageUrl": {
             "type": "string",
             "format": "uri",
-            "description": "HTTPS URL of the image from an approved host (e.g. DALL-E, Azure blob, Pexels, Unsplash, Supabase). Safe redirects are supported.",
+            "description": "HTTPS URL of the image from an approved host (e.g. OpenAI, Azure blob, Pexels, Unsplash, Supabase). Safe redirects are supported.",
             "example": "https://files.oaiusercontent.com/file-sample.png"
           },
           "imageBase64": {
@@ -442,7 +468,7 @@
           },
           "prompt": {
             "type": "string",
-            "description": "Topic or visual prompt for AI image generation fallback if direct image transfer is unavailable.",
+            "description": "Topic prompt for backend AI image generation. Use ONLY when the user does not provide or attach an existing image.",
             "example": "Stock market investing modern graphic"
           }
         }
@@ -466,9 +492,26 @@
             "enum": ["import", "upload", "ai"],
             "example": "import"
           },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 hash of the stored image bytes, verifying exact byte preservation.",
+            "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "fileName": {
+            "type": "string",
+            "example": "attachment.png"
+          },
+          "mimeType": {
+            "type": "string",
+            "example": "image/png"
+          },
+          "byteLength": {
+            "type": "integer",
+            "example": 204800
+          },
           "message": {
             "type": "string",
-            "example": "Image successfully verified and hosted in Supabase Storage."
+            "example": "Attached image successfully verified, hosted in Supabase Storage, and exact bytes preserved."
           }
         }
       },
@@ -505,6 +548,28 @@
             "minLength": 1,
             "description": "Verified public HTTPS URL of the hosted image in Supabase Storage (returned by importChatGPTImage) or an approved external HTTPS host.",
             "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.jpg"
+          },
+          "openaiFileIdRefs": {
+            "type": "array",
+            "description": "Array of file-reference objects from ChatGPT when an attached image is passed directly during post staging.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "mime_type": {
+                  "type": "string"
+                },
+                "download_link": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            }
           },
           "imagePrompt": {
             "type": "string",

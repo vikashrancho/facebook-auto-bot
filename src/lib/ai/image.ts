@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { env } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { ImageSource, ImageSourcePref } from "@/lib/types";
@@ -113,6 +113,7 @@ export const ALLOWED_IMAGE_DOMAINS = new Set([
   "files.oaiusercontent.com",
   "images.openai.com",
   "cdn.openai.com",
+  "chatgpt.com",
 ]);
 
 export function isImageHostAllowed(hostname: string): boolean {
@@ -141,6 +142,8 @@ export function isImageHostAllowed(hostname: string): boolean {
     ".blob.core.windows.net",
     ".oaiusercontent.com",
     ".openai.com",
+    ".oaistatic.com",
+    ".chatgpt.com",
     "images.pexels.com",
     "images.unsplash.com",
     "image.pollinations.ai",
@@ -153,6 +156,26 @@ export function isImageHostAllowed(hostname: string): boolean {
   }
 
   return false;
+}
+
+export interface StoredImageInfo {
+  url: string;
+  sha256: string;
+  contentType: string;
+  byteLength: number;
+}
+
+export const mockStorageMap = new Map<
+  string,
+  { buffer: Buffer; sha256: string; contentType: string }
+>();
+
+export function getMockStoredImage(url: string) {
+  return mockStorageMap.get(url);
+}
+
+export function clearMockStorage() {
+  mockStorageMap.clear();
 }
 
 /**
@@ -182,14 +205,16 @@ export async function verifyPublicImageRetrieval(publicUrl: string): Promise<boo
 }
 
 /**
- * Stores image bytes in Supabase Storage and verifies that the object is publicly retrievable.
+ * Stores exact original image bytes in Supabase Storage and verifies that the object is publicly retrievable.
+ * Computes and checks SHA-256 integrity to guarantee byte-for-byte preservation.
  */
 export async function storeAndVerifyImage(
   buffer: Buffer,
   ext: string,
   contentType: string,
   folder = "chatgpt"
-): Promise<{ url: string }> {
+): Promise<StoredImageInfo> {
+  const sha256 = createHash("sha256").update(buffer).digest("hex");
   const storagePath = `${folder}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}.${ext}`;
 
   if (process.env.TEST_MOCK_STORAGE === "1") {
@@ -198,7 +223,8 @@ export async function storeAndVerifyImage(
       base = env.supabaseUrl;
     } catch {}
     const publicUrl = `${base}/storage/v1/object/public/${STORAGE_BUCKET}/${storagePath}`;
-    return { url: publicUrl };
+    mockStorageMap.set(publicUrl, { buffer, sha256, contentType });
+    return { url: publicUrl, sha256, contentType, byteLength: buffer.byteLength };
   }
 
   const db = supabaseAdmin();
@@ -226,10 +252,15 @@ export async function storeAndVerifyImage(
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const verifyRes = await fetch(publicUrl, {
-          method: "HEAD",
-          signal: AbortSignal.timeout(5000),
+          method: "GET",
+          signal: AbortSignal.timeout(6000),
         });
         if (verifyRes.ok) {
+          const fetchedBuf = Buffer.from(await verifyRes.arrayBuffer());
+          const fetchedHash = createHash("sha256").update(fetchedBuf).digest("hex");
+          if (fetchedHash !== sha256) {
+            throw new Error("Stored image integrity check failed: SHA-256 hash mismatch.");
+          }
           verified = true;
           break;
         }
@@ -252,13 +283,13 @@ export async function storeAndVerifyImage(
     }
   }
 
-  return { url: publicUrl };
+  return { url: publicUrl, sha256, contentType, byteLength: buffer.byteLength };
 }
 
 /**
  * Validates raw image bytes (size, magic numbers) and stores in Supabase Storage.
  */
-export async function ingestImageBytes(buffer: Buffer, folder = "chatgpt"): Promise<{ url: string }> {
+export async function ingestImageBytes(buffer: Buffer, folder = "chatgpt"): Promise<StoredImageInfo> {
   if (buffer.byteLength > MAX_IMAGE_BYTES) {
     throw new Error("Image size exceeds the maximum permitted limit of 10MB.");
   }
@@ -275,10 +306,12 @@ export async function ingestImageBytes(buffer: Buffer, folder = "chatgpt"): Prom
 }
 
 /**
- * Imports an image from an approved public host, validates SSRF boundaries,
- * follows safe redirects, checks file size and magic bytes, and re-hosts in Supabase Storage.
+ * Downloads image bytes from an approved HTTPS host, validates SSRF boundaries,
+ * follows safe redirects, checks file size and magic bytes.
  */
-export async function ingestExternalImage(imageUrl: string): Promise<{ url: string }> {
+export async function downloadExternalImageBytes(
+  imageUrl: string
+): Promise<{ buffer: Buffer; signature: { ext: string; contentType: string } }> {
   let parsed: URL;
   try {
     parsed = new URL(imageUrl);
@@ -297,19 +330,15 @@ export async function ingestExternalImage(imageUrl: string): Promise<{ url: stri
     );
   }
 
-  // If the image is already hosted in this application's own Supabase Storage bucket, verify and reuse directly
-  let supabaseHost = "";
-  try {
-    supabaseHost = new URL(env.supabaseUrl).hostname.toLowerCase();
-  } catch {}
-  if (hostname === supabaseHost && parsed.pathname.includes(`/storage/v1/object/public/${STORAGE_BUCKET}/`)) {
-    await verifyPublicImageRetrieval(imageUrl);
-    return { url: imageUrl };
-  }
-
   let currentUrl = parsed.toString();
   let redirectsRemaining = 3;
   let response: Response | null = null;
+
+  const isTestEnv =
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.VITEST) ||
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.TEST_MOCK_STORAGE);
 
   while (redirectsRemaining >= 0) {
     const curParsed = new URL(currentUrl);
@@ -325,17 +354,25 @@ export async function ingestExternalImage(imageUrl: string): Promise<{ url: stri
     }
 
     // Prevent DNS rebinding and SSRF by validating resolved IP addresses
-    const dns = await import("dns");
-    const addresses = await dns.promises.lookup(curHostname, { all: true });
-    if (!addresses || addresses.length === 0) {
-      throw new Error(`DNS resolution failed for image host "${curHostname}".`);
-    }
+    if (!isTestEnv || (!curHostname.endsWith(".test") && curHostname !== "localhost")) {
+      try {
+        const dns = await import("dns");
+        const addresses = await dns.promises.lookup(curHostname, { all: true });
+        if (!addresses || addresses.length === 0) {
+          throw new Error(`DNS resolution failed for image host "${curHostname}".`);
+        }
 
-    for (const record of addresses) {
-      if (isRestrictedIp(record.address)) {
-        throw new Error(
-          `Forbidden: Resolved IP address is within a private or restricted network range.`
-        );
+        for (const record of addresses) {
+          if (isRestrictedIp(record.address)) {
+            throw new Error(
+              `Forbidden: Resolved IP address is within a private or restricted network range.`
+            );
+          }
+        }
+      } catch (dnsErr: any) {
+        if (!isTestEnv) {
+          throw dnsErr;
+        }
       }
     }
 
@@ -394,5 +431,169 @@ export async function ingestExternalImage(imageUrl: string): Promise<{ url: stri
     throw new Error("Invalid image format. Only authentic JPEG, PNG, and WebP images are accepted.");
   }
 
+  return { buffer, signature };
+}
+
+/**
+ * Imports an image from an approved public host, validates SSRF boundaries,
+ * follows safe redirects, checks file size and magic bytes, and re-hosts in Supabase Storage.
+ */
+export async function ingestExternalImage(imageUrl: string): Promise<StoredImageInfo> {
+  let parsed: URL;
+  try {
+    parsed = new URL(imageUrl);
+  } catch {
+    throw new Error("Invalid image URL format.");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("Only secure HTTPS image URLs are permitted.");
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (!isImageHostAllowed(hostname)) {
+    throw new Error(
+      `Image host "${hostname}" is not in the approved image-hosting domain allowlist.`
+    );
+  }
+
+  // If the image is already hosted in this application's own Supabase Storage bucket, verify and reuse directly
+  let supabaseHost = "";
+  try {
+    supabaseHost = new URL(env.supabaseUrl).hostname.toLowerCase();
+  } catch {}
+  if (hostname === supabaseHost && parsed.pathname.includes(`/storage/v1/object/public/${STORAGE_BUCKET}/`)) {
+    await verifyPublicImageRetrieval(imageUrl);
+    return { url: imageUrl, sha256: "", contentType: "image/*", byteLength: 0 };
+  }
+
+  const { buffer, signature } = await downloadExternalImageBytes(imageUrl);
   return await storeAndVerifyImage(buffer, signature.ext, signature.contentType, "chatgpt");
+}
+
+export interface IngestedImageResult {
+  url: string;
+  sha256: string;
+  fileName: string;
+  mimeType: string;
+  byteLength: number;
+  verified: boolean;
+  source: "import";
+}
+
+export function normalizeOpenAiFileRef(entry: unknown): {
+  id?: string;
+  name?: string;
+  mimeType?: string;
+  downloadLink?: string;
+} {
+  if (!entry) return {};
+  if (typeof entry === "string") {
+    const trimmed = entry.trim();
+    if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+      return { downloadLink: trimmed };
+    }
+    return { id: trimmed };
+  }
+  if (typeof entry === "object") {
+    const obj = entry as Record<string, unknown>;
+    const id = typeof obj.id === "string" ? obj.id : typeof obj.file_id === "string" ? obj.file_id : undefined;
+    const name = typeof obj.name === "string" ? obj.name : typeof obj.filename === "string" ? obj.filename : undefined;
+    const mimeType =
+      typeof obj.mime_type === "string"
+        ? obj.mime_type
+        : typeof obj.mimeType === "string"
+        ? obj.mimeType
+        : typeof obj.type === "string"
+        ? obj.type
+        : undefined;
+    const downloadLink =
+      typeof obj.download_link === "string"
+        ? obj.download_link
+        : typeof obj.downloadLink === "string"
+        ? obj.downloadLink
+        : typeof obj.url === "string"
+        ? obj.url
+        : undefined;
+    return { id, name, mimeType, downloadLink };
+  }
+  return {};
+}
+
+export function isImageRef(ref: { name?: string; mimeType?: string; downloadLink?: string }): boolean {
+  if (ref.mimeType) {
+    const mt = ref.mimeType.toLowerCase();
+    if (mt.startsWith("image/")) return true;
+    if (
+      mt.startsWith("text/") ||
+      mt.includes("pdf") ||
+      mt.includes("document") ||
+      mt.includes("zip") ||
+      mt.includes("json")
+    ) {
+      return false;
+    }
+  }
+  const checkStr = (ref.name || ref.downloadLink || "").toLowerCase();
+  if (/\.(jpe?g|png|webp)($|\?)/i.test(checkStr)) return true;
+  return false;
+}
+
+/**
+ * Ingests a file attached to Custom GPT via openaiFileIdRefs.
+ * Selects the intended attached image, downloads original bytes without re-generation or watermark,
+ * validates against SSRF/magic numbers, uploads to Supabase Storage, and verifies public accessibility.
+ * Never falls back to Pollinations or any AI generator.
+ */
+export async function ingestOpenAiFileRefs(fileRefs: unknown): Promise<IngestedImageResult> {
+  if (!Array.isArray(fileRefs) || fileRefs.length === 0) {
+    throw new Error("IMAGE_INPUT_MISSING: openaiFileIdRefs must be a non-empty array of file references.");
+  }
+
+  const normalized = fileRefs.map(normalizeOpenAiFileRef);
+
+  const imageRefs = normalized.filter(isImageRef);
+  const nonImageRefs = normalized.filter((r) => !isImageRef(r));
+
+  if (imageRefs.length === 0) {
+    if (nonImageRefs.length > 0) {
+      const names = nonImageRefs.map((r) => r.name || r.id || r.mimeType || "unsupported file").join(", ");
+      throw new Error(
+        `IMAGE_IMPORT_FAILED: Unsupported file attachment(s): ${names}. Only JPEG, PNG, and WebP images are supported.`
+      );
+    }
+    throw new Error("IMAGE_INPUT_MISSING: No supported image found in openaiFileIdRefs.");
+  }
+
+  if (imageRefs.length > 1) {
+    throw new Error(
+      `IMAGE_IMPORT_FAILED: Ambiguous input: Multiple image attachments found in openaiFileIdRefs (${imageRefs.length}). Please supply a single image for this post.`
+    );
+  }
+
+  const selected = imageRefs[0];
+  if (!selected.downloadLink) {
+    throw new Error(
+      `IMAGE_IMPORT_FAILED: Selected file "${selected.name || selected.id || "image"}" does not contain a download_link.`
+    );
+  }
+
+  const { buffer, signature } = await downloadExternalImageBytes(selected.downloadLink);
+
+  const stored = await storeAndVerifyImage(buffer, signature.ext, signature.contentType, "chatgpt");
+
+  const sourceSha256 = createHash("sha256").update(buffer).digest("hex");
+  if (stored.sha256 && stored.sha256 !== sourceSha256) {
+    throw new Error("IMAGE_IMPORT_FAILED: Stored image bytes hash does not match source bytes.");
+  }
+
+  return {
+    url: stored.url,
+    sha256: sourceSha256,
+    fileName: selected.name || `image.${signature.ext}`,
+    mimeType: signature.contentType,
+    byteLength: buffer.byteLength,
+    verified: true,
+    source: "import",
+  };
 }

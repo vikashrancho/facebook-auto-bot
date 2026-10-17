@@ -85,9 +85,12 @@ import {
 import {
   ingestImageBytes,
   ingestExternalImage,
+  ingestOpenAiFileRefs,
   storeAndVerifyImage,
   isImageHostAllowed,
   verifyPublicImageRetrieval,
+  getMockStoredImage,
+  mockStorageMap,
 } from "../src/lib/ai/image";
 import type { Post } from "../src/lib/types";
 import { POST as apiRoutePOST } from "../src/app/api/[...path]/route";
@@ -1589,6 +1592,345 @@ async function runTests() {
     const res = await verifyPublicImageRetrieval("https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/test.jpg");
     assert.strictEqual(res, true);
   });
+
+  // ---------------------------------------------------------------------------
+  // 10. Image Attachment Preservation & Anti-Substitution Regression Suite
+  // ---------------------------------------------------------------------------
+  console.log("\nSuite 10: Image Attachment Preservation & Anti-Substitution Regression Suite");
+
+  // Unique PNG image buffer with custom unique visual content payload
+  const uniqueVisualImageBuffer = Buffer.concat([
+    Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG Signature
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+      0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, // IDAT chunk
+      0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4,
+      0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82, // IEND chunk
+    ]),
+    Buffer.from("CHATGPT_USER_ATTACHED_UNIQUE_VISUAL_CONTENT_NO_POLLINATIONS_WATERMARK_2026"),
+  ]);
+  const uniqueVisualHash = crypto.createHash("sha256").update(uniqueVisualImageBuffer).digest("hex");
+
+  // Track Pollinations call count
+  let pollinationsCallCount = 0;
+  const originalFetch = globalThis.fetch;
+
+  // Intercept fetch to serve mock download link and track any Pollinations AI calls
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+
+    if (urlStr.includes("pollinations.ai")) {
+      pollinationsCallCount++;
+      return new Response(uniqueVisualImageBuffer, {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+      });
+    }
+
+    if (urlStr === "https://files.oaiusercontent.com/test-user-attached-chart.png") {
+      return new Response(uniqueVisualImageBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/png",
+          "Content-Length": String(uniqueVisualImageBuffer.byteLength),
+        },
+      });
+    }
+
+    if (urlStr === "https://files.oaiusercontent.com/404-broken-link.png") {
+      return new Response("Not found", { status: 404 });
+    }
+
+    return originalFetch(input, init);
+  }) as typeof globalThis.fetch;
+
+  let importedHostedUrl = "";
+
+  await test("A supplied image reference via openaiFileIdRefs is downloaded and uploaded to Supabase", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "my_custom_chart.png",
+            id: "file-user-attached-123",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201, "Expected HTTP 201 for valid openaiFileIdRefs import");
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.strictEqual(body.source, "import");
+    assert.strictEqual(body.sha256, uniqueVisualHash, "Returned sha256 must match source bytes");
+    assert.ok(body.url.includes("post-images"), "Hosted URL must target Supabase storage");
+    importedHostedUrl = body.url;
+  });
+
+  await test("The stored image bytes in Supabase Storage match the source bytes exactly (SHA-256 hash match)", () => {
+    assert.ok(importedHostedUrl, "Hosted URL must exist from previous test");
+    const stored = getMockStoredImage(importedHostedUrl);
+    assert.ok(stored, "Stored image must exist in mock Supabase storage");
+    assert.deepStrictEqual(stored.buffer, uniqueVisualImageBuffer, "Stored buffer must equal original buffer");
+    assert.strictEqual(stored.sha256, uniqueVisualHash, "Stored SHA-256 must match source bytes");
+    assert.strictEqual(stored.contentType, "image/png");
+  });
+
+  await test("The hosted image URL is publicly retrievable", async () => {
+    const isRetrievable = await verifyPublicImageRetrieval(importedHostedUrl);
+    assert.strictEqual(isRetrievable, true, "Hosted image must be publicly accessible");
+  });
+
+  await test("When an image reference is supplied, Pollinations.ai generator is NEVER called", () => {
+    assert.strictEqual(
+      pollinationsCallCount,
+      0,
+      "Pollinations.ai must never be called when an image reference is provided"
+    );
+  });
+
+  await test("When openaiFileIdRefs is empty array, fails clearly with IMAGE_INPUT_MISSING without replacement", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_INPUT_MISSING"), `Expected IMAGE_INPUT_MISSING, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0, "Must not call Pollinations on missing image input");
+  });
+
+  await test("When openaiFileIdRefs contains non-image file, fails clearly with IMAGE_IMPORT_FAILED without replacement", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "financial_report.pdf",
+            id: "file-doc-456",
+            mime_type: "application/pdf",
+            download_link: "https://files.oaiusercontent.com/report.pdf",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected IMAGE_IMPORT_FAILED, got: ${body.error}`);
+    assert.ok(body.error?.includes("Unsupported file attachment"), `Expected unsupported file details`);
+    assert.strictEqual(pollinationsCallCount, 0, "Must not call Pollinations on unsupported file input");
+  });
+
+  await test("When openaiFileIdRefs contains multiple images, fails clearly (ambiguous input)", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "chart1.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+          },
+          {
+            name: "chart2.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected IMAGE_IMPORT_FAILED, got: ${body.error}`);
+    assert.ok(body.error?.includes("Multiple image attachments"), `Expected ambiguous multiple image message`);
+    assert.strictEqual(pollinationsCallCount, 0, "Must not call Pollinations on ambiguous input");
+  });
+
+  await test("When download link fails (HTTP 404), fails clearly with IMAGE_IMPORT_FAILED without replacement", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "broken_chart.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/404-broken-link.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected IMAGE_IMPORT_FAILED, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0, "Must NEVER call Pollinations as fallback when download fails");
+  });
+
+  await test("A topic-only image-generation request still uses the existing Pollinations.ai feature", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: "Modern professional tech workspace with coffee",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.source, "ai");
+    assert.strictEqual(body.verified, true);
+    assert.ok(pollinationsCallCount > 0, "Pollinations.ai must be called for topic-only generation");
+  });
+
+  await test("POST /api/chatgpt/posts with openaiFileIdRefs preserves original image with unique visual content in draft", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Exact Visual Content Post Draft",
+        description: "This post preserves the exact user-attached chart without watermarks or redrawing.",
+        hashtags: ["VisualPreservation", "Analytics"],
+        openaiFileIdRefs: [
+          {
+            name: "unique_user_chart.png",
+            id: "file-unique-chart-1",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+          },
+        ],
+        idempotencyKey: "unique_visual_preservation_" + Date.now(),
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201, "Expected HTTP 201 for post draft staging");
+    const body = await res.json();
+    assert.strictEqual(body.status, "pending_review");
+    assert.strictEqual(body.approvalRequired, true);
+    assert.ok(body.postId, "Must return valid postId");
+    assert.ok(body.imageUrl.startsWith("https://"), "Must return secure hosted image URL");
+
+    // Verify stored image bytes match unique original visual bytes exactly
+    const stored = getMockStoredImage(body.imageUrl);
+    assert.ok(stored, "Stored image must exist in Supabase storage");
+    assert.deepStrictEqual(
+      stored.buffer,
+      uniqueVisualImageBuffer,
+      "The exact original image—not a newly generated substitute—must be attached to the draft"
+    );
+    assert.strictEqual(stored.sha256, uniqueVisualHash);
+    assert.strictEqual(
+      pollinationsCallCount,
+      0,
+      "Pollinations.ai must NEVER be called when openaiFileIdRefs is supplied to chatgpt/posts"
+    );
+  });
+
+  await test("POST /api/chatgpt/posts fails safely and creates no draft when openaiFileIdRefs download fails", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Broken Download Post",
+        description: "This should fail before creating any draft.",
+        hashtags: ["FailTest"],
+        openaiFileIdRefs: [
+          {
+            name: "broken_chart.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/404-broken-link.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), "Must return clear IMAGE_IMPORT_FAILED error");
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations.ai must NEVER be called as a fallback");
+  });
+
+  await test("OpenAPI schema contains openaiFileIdRefs in ImportImageRequest and CreatePostRequest, and sha256 in response", () => {
+    const filePath = path.resolve("./public/openapi.json");
+    const content = fs.readFileSync(filePath, "utf-8");
+    const parsed = JSON.parse(content);
+
+    const importReq = parsed.components.schemas.ImportImageRequest;
+    assert.ok(importReq.properties.openaiFileIdRefs, "ImportImageRequest must define openaiFileIdRefs");
+    assert.strictEqual(importReq.properties.openaiFileIdRefs.type, "array");
+
+    const importResp = parsed.components.schemas.ImportImageResponse;
+    assert.ok(importResp.properties.sha256, "ImportImageResponse must define sha256 hash field");
+
+    const createReq = parsed.components.schemas.CreatePostRequest;
+    assert.ok(createReq.properties.openaiFileIdRefs, "CreatePostRequest must define openaiFileIdRefs");
+    assert.strictEqual(createReq.properties.openaiFileIdRefs.type, "array");
+  });
+
+  // Restore global fetch
+  globalThis.fetch = originalFetch;
 
   console.log("\n=======================================================");
   console.log(` Test Results: ${passedTests}/${totalTests} Passed (100%)`);
