@@ -356,46 +356,54 @@ const ImportChatGPTImageBody = z
     imageUrl: z
       .string()
       .trim()
+      .min(1, "imageUrl cannot be empty.")
       .url("Invalid imageUrl format. Must be an absolute HTTPS URL.")
       .refine((u) => u.startsWith("https://"), {
         message: "Only secure HTTPS image URLs are permitted.",
       })
       .optional(),
-    imageBase64: z.string().trim().optional(),
-    prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(200).optional(),
+    imageBase64: z.string().trim().min(1, "imageBase64 cannot be empty.").optional(),
+    prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(500).optional(),
   })
   .refine((data) => Boolean(data.imageUrl || data.imageBase64 || data.prompt), {
     message:
       "Either imageUrl (an approved HTTPS image URL), imageBase64 (base64-encoded image), or prompt (for AI image generation) is required.",
   });
 
-const CreateChatGPTPostBody = z.object({
-  title: z.string().trim().min(1, "title is required (1-120 characters).").max(120),
-  description: z.string().trim().min(1, "description is required (1-500 characters).").max(500),
-  hashtags: z.array(z.string().trim().min(1).max(50)).max(15).default([]),
-  imageUrl: z
-    .string({ message: "imageUrl is required." })
-    .trim()
-    .min(1, "imageUrl cannot be empty. An authentic HTTPS image URL from an approved OpenAI/DALL-E host is required.")
-    .url("Invalid imageUrl format. Must be a valid absolute HTTPS URL.")
-    .refine((url) => url.startsWith("https://"), {
-      message: "Only secure HTTPS image URLs are permitted.",
-    })
-    .refine(
-      (url) => {
-        try {
-          return isImageHostAllowed(new URL(url).hostname);
-        } catch {
-          return false;
+const CreateChatGPTPostBody = z
+  .object({
+    title: z.string().trim().min(1, "title is required (1-120 characters).").max(120),
+    description: z.string().trim().min(1, "description is required (1-500 characters).").max(500),
+    hashtags: z.array(z.string().trim().min(1).max(50)).max(15).default([]),
+    imageUrl: z
+      .string()
+      .trim()
+      .min(1, "imageUrl cannot be empty. An authentic HTTPS image URL from an approved OpenAI/DALL-E host is required.")
+      .url("Invalid imageUrl format. Must be a valid absolute HTTPS URL.")
+      .refine((url) => url.startsWith("https://"), {
+        message: "Only secure HTTPS image URLs are permitted.",
+      })
+      .refine(
+        (url) => {
+          try {
+            return isImageHostAllowed(new URL(url).hostname);
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            "Image host is not in the approved image-hosting domain allowlist (e.g. files.oaiusercontent.com, oaidalleapiprodscus.blob.core.windows.net).",
         }
-      },
-      {
-        message:
-          "Image host is not in the approved image-hosting domain allowlist (e.g. files.oaiusercontent.com, oaidalleapiprodscus.blob.core.windows.net).",
-      }
-    ),
-  idempotencyKey: z.string().trim().min(1).max(128).optional(),
-});
+      )
+      .optional(),
+    imagePrompt: z.string().trim().min(2, "imagePrompt must be at least 2 characters.").max(500).optional(),
+    idempotencyKey: z.string().trim().min(1).max(128).optional(),
+  })
+  .refine((data) => Boolean(data.imageUrl || data.imagePrompt), {
+    message:
+      "Either imageUrl (a verified hosted image URL from importChatGPTImage) or imagePrompt (for automated backend generation) is required.",
+  });
 
 const ApproveChatGPTPostBody = z.object({
   userConfirmed: z.boolean(),
@@ -648,19 +656,43 @@ export async function POST(req: Request, ctx: Ctx) {
       try {
         if (b.imageUrl) {
           const res = await ingestExternalImage(b.imageUrl);
-          return json({ url: res.url, verified: true, source: "import" }, 201);
+          return json(
+            {
+              url: res.url,
+              verified: true,
+              source: "import",
+              message: "Image successfully verified and hosted in Supabase Storage.",
+            },
+            201
+          );
         }
 
         if (b.imageBase64) {
-          const raw = b.imageBase64.replace(/^data:image\/[a-z]+;base64,/, "");
+          const raw = b.imageBase64.replace(/^data:image\/[a-z0-9.+_-]+;base64,/i, "");
           const buffer = Buffer.from(raw, "base64");
           const res = await ingestImageBytes(buffer);
-          return json({ url: res.url, verified: true, source: "upload" }, 201);
+          return json(
+            {
+              url: res.url,
+              verified: true,
+              source: "upload",
+              message: "Image successfully uploaded, verified, and hosted in Supabase Storage.",
+            },
+            201
+          );
         }
 
         if (b.prompt) {
           const res = await generateImage(b.prompt, "ai");
-          return json({ url: res.url, verified: true, source: "ai" }, 201);
+          return json(
+            {
+              url: res.url,
+              verified: true,
+              source: "ai",
+              message: "Image generated, verified, and hosted in Supabase Storage.",
+            },
+            201
+          );
         }
 
         return json({ error: "No valid image input provided." }, 400);
@@ -743,7 +775,18 @@ export async function POST(req: Request, ctx: Ctx) {
 
         let ingested: { url: string };
         try {
-          ingested = await ingestExternalImage(b.imageUrl);
+          if (b.imageUrl) {
+            ingested = await ingestExternalImage(b.imageUrl);
+          } else if (b.imagePrompt) {
+            ingested = await generateImage(b.imagePrompt, "ai");
+          } else {
+            return {
+              status: 400,
+              body: {
+                error: "An image URL or imagePrompt is required to create a draft post.",
+              },
+            };
+          }
         } catch (err) {
           return {
             status: 400,

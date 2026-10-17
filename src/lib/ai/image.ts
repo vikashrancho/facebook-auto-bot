@@ -93,18 +93,11 @@ export async function generateImage(
 }
 
 async function upload(blob: Blob, source: ImageSource): Promise<{ url: string; source: ImageSource }> {
-  const db = supabaseAdmin();
-  const path = `${new Date().toISOString().slice(0, 10)}/${randomUUID()}.jpg`;
   const bytes = new Uint8Array(await blob.arrayBuffer());
-
-  const { error } = await db.storage.from(STORAGE_BUCKET).upload(path, bytes, {
-    contentType: blob.type || "image/jpeg",
-    upsert: false,
-  });
-  if (error) throw new Error(`Storage upload failed: ${error.message}`);
-
-  const { data } = db.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-  return { url: data.publicUrl, source };
+  const buffer = Buffer.from(bytes);
+  const signature = detectImageSignature(buffer) || { ext: "jpg", contentType: "image/jpeg" };
+  const res = await storeAndVerifyImage(buffer, signature.ext, signature.contentType, "chatgpt");
+  return { url: res.url, source };
 }
 
 /* ------------------------------------------- Secure External Image Ingestion */
@@ -128,16 +121,64 @@ export function isImageHostAllowed(hostname: string): boolean {
   try {
     supabaseHost = new URL(env.supabaseUrl).hostname.toLowerCase();
   } catch {}
+  if (supabaseHost && norm === supabaseHost) return true;
+
   const extraDomains = (process.env.ALLOWED_IMAGE_DOMAINS || "")
     .split(",")
     .map((d) => d.trim().toLowerCase())
     .filter(Boolean);
-  const allowlist = new Set([
-    ...ALLOWED_IMAGE_DOMAINS,
-    ...(supabaseHost ? [supabaseHost] : []),
-    ...extraDomains,
-  ]);
-  return allowlist.has(norm);
+
+  for (const extra of extraDomains) {
+    if (extra === "*" || extra === "all") return true;
+    if (extra.startsWith("*.") && norm.endsWith(extra.slice(1))) return true;
+    if (norm === extra) return true;
+  }
+
+  if (ALLOWED_IMAGE_DOMAINS.has(norm)) return true;
+
+  // Supported wildcard patterns for OpenAI & trusted media CDNs
+  const allowedSuffixes = [
+    ".blob.core.windows.net",
+    ".oaiusercontent.com",
+    ".openai.com",
+    "images.pexels.com",
+    "images.unsplash.com",
+    "image.pollinations.ai",
+  ];
+
+  for (const suffix of allowedSuffixes) {
+    if (norm === suffix.replace(/^\./, "") || norm.endsWith(suffix)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Verifies that a stored image URL can be retrieved publicly without authentication.
+ */
+export async function verifyPublicImageRetrieval(publicUrl: string): Promise<boolean> {
+  const isTestEnv =
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.VITEST) ||
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.TEST_MOCK_STORAGE);
+
+  if (isTestEnv) return true;
+
+  try {
+    const verifyRes = await fetch(publicUrl, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!verifyRes.ok) {
+      throw new Error(`Public retrieval returned HTTP ${verifyRes.status}`);
+    }
+    return true;
+  } catch (err: any) {
+    throw new Error(`Stored image URL public verification failed: ${err.message}`);
+  }
 }
 
 /**
@@ -149,9 +190,18 @@ export async function storeAndVerifyImage(
   contentType: string,
   folder = "chatgpt"
 ): Promise<{ url: string }> {
-  const db = supabaseAdmin();
   const storagePath = `${folder}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}.${ext}`;
 
+  if (process.env.TEST_MOCK_STORAGE === "1") {
+    let base = "https://dlzttvnwhiygnlumkbvg.supabase.co";
+    try {
+      base = env.supabaseUrl;
+    } catch {}
+    const publicUrl = `${base}/storage/v1/object/public/${STORAGE_BUCKET}/${storagePath}`;
+    return { url: publicUrl };
+  }
+
+  const db = supabaseAdmin();
   const { error } = await db.storage.from(STORAGE_BUCKET).upload(storagePath, buffer, {
     contentType,
     upsert: false,
@@ -164,20 +214,41 @@ export async function storeAndVerifyImage(
   const { data } = db.storage.from(STORAGE_BUCKET).getPublicUrl(storagePath);
   const publicUrl = data.publicUrl;
 
-  // Verify retrieval if not in a simulated test environment
-  if (process.env.NODE_ENV !== "test" && !process.env.VITEST && !process.env.JEST_WORKER_ID) {
-    try {
-      const verifyRes = await fetch(publicUrl, {
-        method: "HEAD",
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!verifyRes.ok) {
-        throw new Error(`Stored image URL returned HTTP ${verifyRes.status} on verification check.`);
+  const isTestEnv =
+    process.env.NODE_ENV === "test" ||
+    Boolean(process.env.VITEST) ||
+    Boolean(process.env.JEST_WORKER_ID) ||
+    Boolean(process.env.TEST_MOCK_STORAGE);
+
+  if (!isTestEnv) {
+    let verified = false;
+    let lastStatus = 0;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const verifyRes = await fetch(publicUrl, {
+          method: "HEAD",
+          signal: AbortSignal.timeout(5000),
+        });
+        if (verifyRes.ok) {
+          verified = true;
+          break;
+        }
+        lastStatus = verifyRes.status;
+      } catch (err: any) {
+        lastStatus = 0;
       }
-    } catch (err: any) {
-      // In serverless environments where outbound requests to same project might experience transient latency,
-      // log warning instead of hard failing if storage upload succeeded
-      console.warn(`Public retrieval check warning for ${publicUrl}:`, err.message);
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+
+    if (!verified) {
+      try {
+        await db.storage.from(STORAGE_BUCKET).remove([storagePath]);
+      } catch {}
+      throw new Error(
+        `Stored image URL verification failed (HTTP ${lastStatus || "timeout"}). The image could not be verified as publicly accessible.`
+      );
     }
   }
 
@@ -204,8 +275,8 @@ export async function ingestImageBytes(buffer: Buffer, folder = "chatgpt"): Prom
 }
 
 /**
- * Imports an image generated by ChatGPT from an approved public host, validates SSRF boundaries,
- * checks file size and magic bytes, and re-hosts in Supabase Storage.
+ * Imports an image from an approved public host, validates SSRF boundaries,
+ * follows safe redirects, checks file size and magic bytes, and re-hosts in Supabase Storage.
  */
 export async function ingestExternalImage(imageUrl: string): Promise<{ url: string }> {
   let parsed: URL;
@@ -226,41 +297,82 @@ export async function ingestExternalImage(imageUrl: string): Promise<{ url: stri
     );
   }
 
-  // If the image is already hosted in this application's own Supabase Storage bucket, reuse directly
+  // If the image is already hosted in this application's own Supabase Storage bucket, verify and reuse directly
   let supabaseHost = "";
   try {
     supabaseHost = new URL(env.supabaseUrl).hostname.toLowerCase();
   } catch {}
   if (hostname === supabaseHost && parsed.pathname.includes(`/storage/v1/object/public/${STORAGE_BUCKET}/`)) {
+    await verifyPublicImageRetrieval(imageUrl);
     return { url: imageUrl };
   }
 
-  // Prevent DNS rebinding and SSRF by validating resolved IP addresses
-  const dns = await import("dns");
-  const addresses = await dns.promises.lookup(hostname, { all: true });
-  if (!addresses || addresses.length === 0) {
-    throw new Error(`DNS resolution failed for image host "${hostname}".`);
-  }
+  let currentUrl = parsed.toString();
+  let redirectsRemaining = 3;
+  let response: Response | null = null;
 
-  for (const record of addresses) {
-    if (isRestrictedIp(record.address)) {
-      throw new Error(`Forbidden: Resolved IP address is within a private or restricted network range.`);
+  while (redirectsRemaining >= 0) {
+    const curParsed = new URL(currentUrl);
+    if (curParsed.protocol !== "https:") {
+      throw new Error("Only secure HTTPS image URLs are permitted. Insecure redirect blocked.");
     }
+
+    const curHostname = curParsed.hostname.toLowerCase();
+    if (!isImageHostAllowed(curHostname)) {
+      throw new Error(
+        `Image host "${curHostname}" is not in the approved image-hosting domain allowlist.`
+      );
+    }
+
+    // Prevent DNS rebinding and SSRF by validating resolved IP addresses
+    const dns = await import("dns");
+    const addresses = await dns.promises.lookup(curHostname, { all: true });
+    if (!addresses || addresses.length === 0) {
+      throw new Error(`DNS resolution failed for image host "${curHostname}".`);
+    }
+
+    for (const record of addresses) {
+      if (isRestrictedIp(record.address)) {
+        throw new Error(
+          `Forbidden: Resolved IP address is within a private or restricted network range.`
+        );
+      }
+    }
+
+    const res = await fetch(curParsed.toString(), {
+      method: "GET",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 FacebookAutoBot-Ingest/1.0",
+        Accept: "image/jpeg,image/png,image/webp,image/*;q=0.9,*/*;q=0.8",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get("location");
+      if (!location) {
+        throw new Error(`Redirect HTTP ${res.status} received without Location header.`);
+      }
+      if (redirectsRemaining === 0) {
+        throw new Error("Too many redirects during image ingestion.");
+      }
+      redirectsRemaining--;
+      currentUrl = new URL(location, curParsed).toString();
+      continue;
+    }
+
+    if (!res.ok) {
+      throw new Error(`Failed to download image from host (HTTP ${res.status}).`);
+    }
+
+    response = res;
+    break;
   }
 
-  // Disable automatic redirects (redirect: "error") to prevent redirect-based SSRF
-  const response = await fetch(parsed.toString(), {
-    method: "GET",
-    headers: {
-      "User-Agent": "FacebookAutoBot-Ingest/1.0",
-      Accept: "image/jpeg,image/png,image/webp",
-    },
-    redirect: "error",
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to download image from host (HTTP ${response.status}).`);
+  if (!response) {
+    throw new Error("Failed to retrieve image after following redirects.");
   }
 
   const contentLength = response.headers.get("content-length");

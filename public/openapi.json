@@ -59,8 +59,8 @@
     "/api/chatgpt/images": {
       "post": {
         "operationId": "importChatGPTImage",
-        "summary": "Import or generate image for Facebook post",
-        "description": "Uploads image bytes, imports from an approved HTTPS host, or generates an image. Returns a verified Supabase Storage public URL.",
+        "summary": "Import, upload, or generate image for Facebook post",
+        "description": "Uploads image bytes (base64), imports from an approved HTTPS host (with safe redirect defense), or generates an image using AI fallback. Stores the accepted image in Supabase Storage and returns a verified public HTTPS URL. Recommended first step before creating a post draft.",
         "requestBody": {
           "required": true,
           "content": {
@@ -109,7 +109,7 @@
       "post": {
         "operationId": "createChatGPTPost",
         "summary": "Stage a generated post for user review",
-        "description": "Create a Facebook post draft with the supplied content and image. Returns the post ID, content hash, and review URL. Does not publish to Facebook.",
+        "description": "Create a Facebook post draft with the supplied content and hosted image URL. Recommended workflow: first call importChatGPTImage to host the image in Supabase Storage, then pass the returned public URL to this endpoint. Alternatively, provide imagePrompt for automated server-side generation. Returns the post ID, content hash, and review URL. Does not publish to Facebook and does not approve drafts.",
         "requestBody": {
           "required": true,
           "content": {
@@ -433,16 +433,16 @@
           "imageUrl": {
             "type": "string",
             "format": "uri",
-            "description": "HTTPS URL of the image from an approved host.",
+            "description": "HTTPS URL of the image from an approved host (e.g. DALL-E, Azure blob, Pexels, Unsplash, Supabase). Safe redirects are supported.",
             "example": "https://files.oaiusercontent.com/file-sample.png"
           },
           "imageBase64": {
             "type": "string",
-            "description": "Raw base64-encoded image string (PNG, JPEG, or WebP)."
+            "description": "Raw base64-encoded image string or data URI (PNG, JPEG, or WebP)."
           },
           "prompt": {
             "type": "string",
-            "description": "Topic or visual prompt for AI image generation fallback.",
+            "description": "Topic or visual prompt for AI image generation fallback if direct image transfer is unavailable.",
             "example": "Stock market investing modern graphic"
           }
         }
@@ -465,12 +465,16 @@
             "type": "string",
             "enum": ["import", "upload", "ai"],
             "example": "import"
+          },
+          "message": {
+            "type": "string",
+            "example": "Image successfully verified and hosted in Supabase Storage."
           }
         }
       },
       "CreatePostRequest": {
         "type": "object",
-        "required": ["title", "description", "imageUrl"],
+        "required": ["title", "description"],
         "properties": {
           "title": {
             "type": "string",
@@ -499,8 +503,15 @@
             "type": "string",
             "format": "uri",
             "minLength": 1,
-            "description": "Public HTTPS URL of an image from an approved OpenAI/DALL-E domain or the app's Supabase storage. Cannot be empty.",
-            "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/2026-10-09/7122985f-11b1-49ce-9824-512b7e1ebe9c.jpg"
+            "description": "Verified public HTTPS URL of the hosted image in Supabase Storage (returned by importChatGPTImage) or an approved external HTTPS host.",
+            "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.jpg"
+          },
+          "imagePrompt": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 500,
+            "description": "Visual scene description for automated server-side generation fallback if imageUrl is not provided.",
+            "example": "Professional modern photography of productive workspace with laptop and coffee"
           },
           "idempotencyKey": {
             "type": "string",

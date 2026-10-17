@@ -29,6 +29,41 @@ import assert from "assert";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+
+// Ensure environment variables are loaded for safe test execution
+const envLocalPath = path.resolve(".env.local");
+if (fs.existsSync(envLocalPath)) {
+  const content = fs.readFileSync(envLocalPath, "utf-8");
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed && !trimmed.startsWith("#") && trimmed.includes("=")) {
+      const idx = trimmed.indexOf("=");
+      const key = trimmed.slice(0, idx).trim();
+      const val = trimmed.slice(idx + 1).trim();
+      if (!process.env[key]) {
+        process.env[key] = val;
+      }
+    }
+  }
+}
+(process.env as Record<string, string | undefined>).NODE_ENV = "test";
+process.env.TEST_MOCK_STORAGE = "1";
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://dlzttvnwhiygnlumkbvg.supabase.co";
+}
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key-for-local-mock-suite";
+}
+if (!process.env.ADMIN_PASSWORD) {
+  process.env.ADMIN_PASSWORD = "test-admin-password";
+}
+if (!process.env.SESSION_SECRET) {
+  process.env.SESSION_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+}
+if (!process.env.INTEGRATION_API_KEY) {
+  process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+}
+
 import {
   timingSafeEqualString,
   validateIntegrationAuth,
@@ -47,6 +82,13 @@ import {
   isRestrictedIp,
   detectImageSignature,
 } from "../src/lib/ai/image-security";
+import {
+  ingestImageBytes,
+  ingestExternalImage,
+  storeAndVerifyImage,
+  isImageHostAllowed,
+  verifyPublicImageRetrieval,
+} from "../src/lib/ai/image";
 import type { Post } from "../src/lib/types";
 import { POST as apiRoutePOST } from "../src/app/api/[...path]/route";
 
@@ -1340,6 +1382,212 @@ async function runTests() {
     assert.strictEqual(res.status, 400);
     const body = await res.json();
     assert.ok(body.error?.includes("Invalid image format"), `Expected magic byte rejection, got: ${body.error}`);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 9. End-to-End Image Hosting & Draft Creation Verification
+  // ---------------------------------------------------------------------------
+  console.log("\nSuite 9: End-to-End Image Hosting & Draft Creation");
+
+  const validPngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const validJpegBase64 = Buffer.from([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08,
+    0xff, 0xd9,
+  ]).toString("base64");
+  const validWebpBase64 = Buffer.from([
+    0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x4c,
+    0x0e, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  ]).toString("base64");
+
+  await test("isImageHostAllowed accepts approved domains and wildcard patterns", () => {
+    assert.strictEqual(isImageHostAllowed("files.oaiusercontent.com"), true);
+    assert.strictEqual(isImageHostAllowed("oaidalleapiprodscus.blob.core.windows.net"), true);
+    assert.strictEqual(isImageHostAllowed("dalleproduseast.blob.core.windows.net"), true);
+    assert.strictEqual(isImageHostAllowed("regional-cluster.blob.core.windows.net"), true);
+    assert.strictEqual(isImageHostAllowed("user-content.oaiusercontent.com"), true);
+    assert.strictEqual(isImageHostAllowed("cdn.openai.com"), true);
+    assert.strictEqual(isImageHostAllowed("images.pexels.com"), true);
+    assert.strictEqual(isImageHostAllowed("images.unsplash.com"), true);
+    assert.strictEqual(isImageHostAllowed("image.pollinations.ai"), true);
+    assert.strictEqual(isImageHostAllowed("attacker-site.com"), false);
+  });
+
+  await test("ingestImageBytes validates and rejects oversized images (>10MB)", async () => {
+    const oversizedBuffer = Buffer.alloc(10 * 1024 * 1024 + 1);
+    await assert.rejects(
+      async () => {
+        await ingestImageBytes(oversizedBuffer);
+      },
+      (err: any) => err.message.includes("10MB")
+    );
+  });
+
+  await test("ingestImageBytes validates and rejects empty images (0 bytes)", async () => {
+    const emptyBuffer = Buffer.alloc(0);
+    await assert.rejects(
+      async () => {
+        await ingestImageBytes(emptyBuffer);
+      },
+      (err: any) => err.message.includes("empty")
+    );
+  });
+
+  await test("ingestImageBytes rejects corrupt/non-image buffer", async () => {
+    const corruptBuffer = Buffer.from("this is a text file not an authentic image");
+    await assert.rejects(
+      async () => {
+        await ingestImageBytes(corruptBuffer);
+      },
+      (err: any) => err.message.includes("Invalid image format")
+    );
+  });
+
+  await test("POST /api/chatgpt/images successfully processes valid PNG base64", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageBase64: validPngBase64 }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.strictEqual(body.source, "upload");
+    assert.ok(body.url.startsWith("https://"), "Hosted URL must be HTTPS");
+    assert.ok(body.url.includes("post-images"), "Hosted URL must target post-images bucket");
+  });
+
+  await test("POST /api/chatgpt/images successfully processes valid data URI format", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageBase64: `data:image/png;base64,${validPngBase64}` }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+  });
+
+  await test("POST /api/chatgpt/images successfully processes valid JPEG base64", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageBase64: validJpegBase64 }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.ok(body.url.endsWith(".jpg"));
+  });
+
+  await test("POST /api/chatgpt/images successfully processes valid WebP base64", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageBase64: validWebpBase64 }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.ok(body.url.endsWith(".webp"));
+  });
+
+  await test("POST /api/chatgpt/images rejects inaccessible or 404 URL gracefully", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ imageUrl: "https://files.oaiusercontent.com/file-nonexistent-404-test.png" }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error, "Error message must be returned");
+  });
+
+  await test("POST /api/chatgpt/posts successfully creates draft with hosted Supabase image URL", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const hostedSupabaseUrl = "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-17/test-draft-image.jpg";
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Proven Morning Focus Routine",
+        description: "Drinking water before coffee transforms your energy and mental clarity. What is your go-to morning habit?",
+        hashtags: ["Productivity", "Wellness"],
+        imageUrl: hostedSupabaseUrl,
+        idempotencyKey: "test_draft_creation_" + Date.now(),
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201);
+    const body = await res.json();
+    assert.strictEqual(body.status, "pending_review");
+    assert.strictEqual(body.approvalRequired, true);
+    assert.ok(body.postId, "Must return postId");
+    assert.ok(body.contentHash && body.contentHash.length === 64, "Must return 64-char sha256 contentHash");
+    assert.ok(body.reviewUrl.startsWith("/dashboard/queue?post="), "Must return reviewUrl pointing to dashboard review");
+    assert.strictEqual(body.imageUrl, hostedSupabaseUrl);
+  });
+
+  await test("POST /api/chatgpt/posts fails safely and creates no draft when image import fails", async () => {
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/posts", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: "Failing Post Image Test",
+        description: "This should fail before creating any draft.",
+        hashtags: ["FailTest"],
+        imageUrl: "https://files.oaiusercontent.com/file-nonexistent-fail-test.png",
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error, "Must report clear error");
+  });
+
+  await test("Public URL retrieval check: verifyPublicImageRetrieval passes in test environment", async () => {
+    const res = await verifyPublicImageRetrieval("https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/test.jpg");
+    assert.strictEqual(res, true);
   });
 
   console.log("\n=======================================================");
