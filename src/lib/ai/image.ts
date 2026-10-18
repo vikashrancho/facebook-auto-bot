@@ -532,6 +532,39 @@ export interface IngestedImageResult {
   source: "import";
 }
 
+export function sanitizeFileName(name: unknown): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const base = name.trim().replace(/[\0\r\n/\\]/g, "_");
+  const sanitized = base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 128);
+  return sanitized.length > 0 ? sanitized : undefined;
+}
+
+export function sanitizeFileId(id: unknown): string | undefined {
+  if (typeof id !== "string") return undefined;
+  const trimmed = id.trim().slice(0, 128);
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function sanitizeMimeType(mt: unknown): string | undefined {
+  if (typeof mt !== "string") return undefined;
+  const trimmed = mt.trim().toLowerCase().slice(0, 64);
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function sanitizeDownloadLink(link: unknown): string | undefined {
+  if (typeof link !== "string") return undefined;
+  const trimmed = link.trim();
+  if (trimmed.length === 0 || trimmed.length > 4096) return undefined;
+  if (!trimmed.startsWith("https://") && !trimmed.startsWith("http://")) return undefined;
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return undefined;
+    return trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
 export function normalizeOpenAiFileRef(entry: unknown): {
   id?: string;
   name?: string;
@@ -541,16 +574,28 @@ export function normalizeOpenAiFileRef(entry: unknown): {
   if (!entry) return {};
   if (typeof entry === "string") {
     const trimmed = entry.trim();
-    if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
-      return { downloadLink: trimmed };
+    // GPT Actions runtime may serialize file-reference objects as JSON strings
+    // when the OpenAPI schema declares items as type: string (per official docs).
+    if (trimmed.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === "object" && parsed !== null) {
+          return normalizeOpenAiFileRef(parsed);
+        }
+      } catch {
+        // Not valid JSON — fall through to URL/ID handling
+      }
     }
-    return { id: trimmed };
+    if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+      return { downloadLink: sanitizeDownloadLink(trimmed) };
+    }
+    return { id: sanitizeFileId(trimmed) };
   }
   if (typeof entry === "object") {
     const obj = entry as Record<string, unknown>;
-    const id = typeof obj.id === "string" ? obj.id : typeof obj.file_id === "string" ? obj.file_id : undefined;
-    const name = typeof obj.name === "string" ? obj.name : typeof obj.filename === "string" ? obj.filename : undefined;
-    const mimeType =
+    const rawId = typeof obj.id === "string" ? obj.id : typeof obj.file_id === "string" ? obj.file_id : undefined;
+    const rawName = typeof obj.name === "string" ? obj.name : typeof obj.filename === "string" ? obj.filename : undefined;
+    const rawMimeType =
       typeof obj.mime_type === "string"
         ? obj.mime_type
         : typeof obj.mimeType === "string"
@@ -558,7 +603,7 @@ export function normalizeOpenAiFileRef(entry: unknown): {
         : typeof obj.type === "string"
         ? obj.type
         : undefined;
-    const downloadLink =
+    const rawDownloadLink =
       typeof obj.download_link === "string"
         ? obj.download_link
         : typeof obj.downloadLink === "string"
@@ -566,7 +611,13 @@ export function normalizeOpenAiFileRef(entry: unknown): {
         : typeof obj.url === "string"
         ? obj.url
         : undefined;
-    return { id, name, mimeType, downloadLink };
+
+    return {
+      id: sanitizeFileId(rawId),
+      name: sanitizeFileName(rawName),
+      mimeType: sanitizeMimeType(rawMimeType),
+      downloadLink: sanitizeDownloadLink(rawDownloadLink),
+    };
   }
   return {};
 }
@@ -574,6 +625,7 @@ export function normalizeOpenAiFileRef(entry: unknown): {
 export function isImageRef(ref: { name?: string; mimeType?: string; downloadLink?: string }): boolean {
   if (ref.mimeType) {
     const mt = ref.mimeType.toLowerCase();
+    if (mt === "image/jpeg" || mt === "image/png" || mt === "image/webp") return true;
     if (mt.startsWith("image/")) return true;
     if (
       mt.startsWith("text/") ||
@@ -585,8 +637,14 @@ export function isImageRef(ref: { name?: string; mimeType?: string; downloadLink
       return false;
     }
   }
-  const checkStr = (ref.name || ref.downloadLink || "").toLowerCase();
+  const checkStr = (ref.name || "").toLowerCase();
   if (/\.(jpe?g|png|webp)($|\?)/i.test(checkStr)) return true;
+  if (ref.downloadLink) {
+    try {
+      const pathname = new URL(ref.downloadLink).pathname.toLowerCase();
+      if (/\.(jpe?g|png|webp)($|\?)/i.test(pathname)) return true;
+    } catch {}
+  }
   return false;
 }
 
@@ -599,6 +657,9 @@ export function isImageRef(ref: { name?: string; mimeType?: string; downloadLink
 export async function ingestOpenAiFileRefs(fileRefs: unknown): Promise<IngestedImageResult> {
   if (!Array.isArray(fileRefs) || fileRefs.length === 0) {
     throw new Error("IMAGE_INPUT_MISSING: openaiFileIdRefs must be a non-empty array of file references.");
+  }
+  if (fileRefs.length > 10) {
+    throw new Error("IMAGE_IMPORT_FAILED: Exceeded maximum allowed file references (max 10).");
   }
 
   const normalized = fileRefs.map(normalizeOpenAiFileRef);
@@ -625,7 +686,7 @@ export async function ingestOpenAiFileRefs(fileRefs: unknown): Promise<IngestedI
   const selected = imageRefs[0];
   if (!selected.downloadLink) {
     throw new Error(
-      `IMAGE_IMPORT_FAILED: Selected file "${selected.name || selected.id || "image"}" does not contain a download_link.`
+      `IMAGE_IMPORT_FAILED: Selected file "${selected.name || selected.id || "image"}" does not contain a valid download_link.`
     );
   }
 

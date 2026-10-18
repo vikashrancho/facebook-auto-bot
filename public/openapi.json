@@ -491,28 +491,9 @@
         "properties": {
           "openaiFileIdRefs": {
             "type": "array",
-            "description": "Array of file-reference objects from ChatGPT when the user attaches an image. The backend immediately downloads the original bytes from download_link and hosts them in Supabase Storage without modification.",
+            "description": "Attached image files from ChatGPT (DALL-E generated or user-uploaded). Accepts up to 1 image file. At runtime, each element is a JSON object with name, id, mime_type, and download_link. The backend immediately downloads the original bytes and hosts them in Supabase Storage without modification. Only JPEG, PNG, and WebP images are supported.",
             "items": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string",
-                  "description": "Original file name."
-                },
-                "id": {
-                  "type": "string",
-                  "description": "OpenAI internal file identifier."
-                },
-                "mime_type": {
-                  "type": "string",
-                  "description": "MIME type (e.g. image/png, image/jpeg, image/webp)."
-                },
-                "download_link": {
-                  "type": "string",
-                  "format": "uri",
-                  "description": "Temporary secure HTTPS download link provided by OpenAI."
-                }
-              }
+              "type": "string"
             }
           },
           "imageUrl": {
@@ -643,24 +624,9 @@
           },
           "openaiFileIdRefs": {
             "type": "array",
-            "description": "Array of file-reference objects from ChatGPT when an attached image is passed directly during post staging.",
+            "description": "Attached image files from ChatGPT (DALL-E generated or user-uploaded). At runtime, each element is a JSON object with name, id, mime_type, and download_link.",
             "items": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "mime_type": {
-                  "type": "string"
-                },
-                "download_link": {
-                  "type": "string",
-                  "format": "uri"
-                }
-              }
+              "type": "string"
             }
           },
           "idempotencyKey": {

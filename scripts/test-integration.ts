@@ -1641,7 +1641,7 @@ async function runTests() {
       );
     }
 
-    if (urlStr === "https://files.oaiusercontent.com/test-user-attached-chart.png") {
+    if (urlStr.startsWith("https://files.oaiusercontent.com/test-user-attached-chart.png")) {
       return new Response(uniqueVisualImageBuffer, {
         status: 200,
         headers: {
@@ -1653,6 +1653,32 @@ async function runTests() {
 
     if (urlStr === "https://files.oaiusercontent.com/404-broken-link.png") {
       return new Response("Not found", { status: 404 });
+    }
+
+    if (urlStr.startsWith("https://files.oaiusercontent.com/expired-link.png")) {
+      return new Response("Authentication link expired", { status: 403 });
+    }
+
+    if (urlStr.startsWith("https://files.oaiusercontent.com/invalid-bytes.png")) {
+      const corruptBuffer = Buffer.from("<html><body>Not an image</body></html>", "utf-8");
+      return new Response(corruptBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/png",
+          "Content-Length": String(corruptBuffer.byteLength),
+        },
+      });
+    }
+
+    if (urlStr.startsWith("https://files.oaiusercontent.com/oversized-image.png")) {
+      const oversizedBuffer = Buffer.alloc(11 * 1024 * 1024, 0x41);
+      return new Response(oversizedBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/png",
+          "Content-Length": String(oversizedBuffer.byteLength),
+        },
+      });
     }
 
     return originalFetch(input, init);
@@ -1823,7 +1849,7 @@ async function runTests() {
     assert.strictEqual(pollinationsCallCount, 0, "Must NEVER call Pollinations as fallback when download fails");
   });
 
-  await test("A topic-only image-generation request uses the AI generator and never calls Pollinations", async () => {
+  await test("The image generator is never called by the import endpoint when only prompt is passed", async () => {
     pollinationsCallCount = 0;
     openAiImageGenCallCount = 0;
     process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
@@ -1839,12 +1865,242 @@ async function runTests() {
     });
     const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
     const res = await apiRoutePOST(req, ctx);
-    assert.strictEqual(res.status, 201);
+    assert.strictEqual(res.status, 400, "Import endpoint must reject prompt-only request");
     const body = await res.json();
-    assert.strictEqual(body.source, "ai");
+    assert.ok(body.error?.includes("IMAGE_INPUT_MISSING"), `Expected IMAGE_INPUT_MISSING, got: ${body.error}`);
+    assert.strictEqual(openAiImageGenCallCount, 0, "AI generator must NEVER be called by import endpoint");
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations.ai must NEVER be called");
+  });
+
+  await test("Valid GPT-injected reference objects with long signed HTTPS download links (>500 characters) succeed and preserve original bytes", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const longQueryParam = "signature=" + "x".repeat(550) + "&token=" + "y".repeat(100);
+    const longDownloadLink = `https://files.oaiusercontent.com/test-user-attached-chart.png?${longQueryParam}`;
+    assert.ok(longDownloadLink.length > 600, "Download link must exceed 600 characters");
+
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "warren_buffett_motivational_chart.png",
+            id: "file-long-link-buffett-999",
+            mime_type: "image/png",
+            download_link: longDownloadLink,
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201, "Expected HTTP 201 for valid import with long download link");
+    const body = await res.json();
     assert.strictEqual(body.verified, true);
-    assert.ok(openAiImageGenCallCount > 0, "AI generator must be called for topic-only generation");
-    assert.strictEqual(pollinationsCallCount, 0, "Pollinations.ai must never be called");
+    assert.strictEqual(body.sha256, uniqueVisualHash);
+    const stored = getMockStoredImage(body.url);
+    assert.ok(stored, "Stored image must exist");
+    assert.deepStrictEqual(stored.buffer, uniqueVisualImageBuffer, "Original bytes must be preserved");
+    assert.strictEqual(pollinationsCallCount, 0);
+  });
+
+  await test("A request in which a legitimate URL is longer than 500 characters via imageUrl succeeds", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const longQueryParam = "auth=" + "a".repeat(520);
+    const longImageUrl = `https://files.oaiusercontent.com/test-user-attached-chart.png?${longQueryParam}`;
+    assert.ok(longImageUrl.length > 550, "Image URL must exceed 500 characters");
+
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        imageUrl: longImageUrl,
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201, "Expected HTTP 201 for long imageUrl");
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.strictEqual(body.sha256, uniqueVisualHash);
+  });
+
+  await test("A prompt longer than 500 characters passed alongside openaiFileIdRefs succeeds without string length error", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const longPromptContext = "Warren Buffett wise investor sitting in an office with stock charts and books. ".repeat(10);
+    assert.ok(longPromptContext.length > 600, "Prompt context must exceed 600 characters");
+
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: longPromptContext,
+        openaiFileIdRefs: [
+          {
+            name: "buffett_wisdom.png",
+            id: "file-buffett-wisdom-101",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201, "Expected HTTP 201 without string length rejection");
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.strictEqual(body.sha256, uniqueVisualHash);
+  });
+
+  await test("GPT Actions runtime serialized JSON string in openaiFileIdRefs is supported", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+
+    const serializedRef = JSON.stringify({
+      name: "serialized_chart.png",
+      id: "file-serialized-888",
+      mime_type: "image/png",
+      download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+    });
+
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [serializedRef],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 201, "Expected HTTP 201 for serialized JSON string in openaiFileIdRefs");
+    const body = await res.json();
+    assert.strictEqual(body.verified, true);
+    assert.strictEqual(body.sha256, uniqueVisualHash);
+  });
+
+  await test("When download link is expired (HTTP 403), fails clearly with IMAGE_IMPORT_FAILED without replacement", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "expired_chart.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/expired-link.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected IMAGE_IMPORT_FAILED, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations must never be called on expired link");
+  });
+
+  await test("When downloaded bytes are invalid non-image content, fails clearly with IMAGE_IMPORT_FAILED without replacement", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "corrupt_data.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/invalid-bytes.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected IMAGE_IMPORT_FAILED, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations must never be called on invalid bytes");
+  });
+
+  await test("When downloaded image exceeds maximum permitted size (>10MB), fails clearly with IMAGE_IMPORT_FAILED without replacement", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: [
+          {
+            name: "huge_file.png",
+            mime_type: "image/png",
+            download_link: "https://files.oaiusercontent.com/oversized-image.png",
+          },
+        ],
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected IMAGE_IMPORT_FAILED, got: ${body.error}`);
+    assert.ok(body.error?.includes("maximum permitted limit"), `Expected size limit message, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0, "Pollinations must never be called on oversized image");
+  });
+
+  await test("When openaiFileIdRefs exceeds 10 file references, fails clearly with IMAGE_IMPORT_FAILED", async () => {
+    pollinationsCallCount = 0;
+    process.env.INTEGRATION_API_KEY = "test-secret-key-12345";
+    const elevenRefs = Array.from({ length: 11 }, (_, i) => ({
+      name: `chart_${i}.png`,
+      mime_type: "image/png",
+      download_link: "https://files.oaiusercontent.com/test-user-attached-chart.png",
+    }));
+
+    const req = new Request("http://localhost:3000/api/chatgpt/images", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        openaiFileIdRefs: elevenRefs,
+      }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "images"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("IMAGE_INPUT_MISSING") || body.error?.includes("IMAGE_IMPORT_FAILED"), `Expected error, got: ${body.error}`);
+    assert.strictEqual(pollinationsCallCount, 0);
   });
 
   await test("POST /api/chatgpt/posts with openaiFileIdRefs preserves original image with unique visual content in draft", async () => {

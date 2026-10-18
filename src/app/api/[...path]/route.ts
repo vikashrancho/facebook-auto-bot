@@ -359,30 +359,34 @@ const CredentialsBody = z.object({
 
 const ImportChatGPTImageBody = z
   .object({
-    openaiFileIdRefs: z.array(z.any()).optional(),
+    openaiFileIdRefs: z.array(z.any()).max(10).optional(),
     imageUrl: z
       .string()
       .trim()
       .min(1, "imageUrl cannot be empty.")
+      .max(4096, "imageUrl cannot exceed 4096 characters.")
       .url("Invalid imageUrl format. Must be an absolute HTTPS URL.")
       .refine((u) => u.startsWith("https://"), {
         message: "Only secure HTTPS image URLs are permitted.",
       })
       .optional(),
     imageBase64: z.string().trim().min(1, "imageBase64 cannot be empty.").optional(),
-    prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(500).optional(),
+    prompt: z
+      .string()
+      .trim()
+      .max(4000, "prompt cannot exceed 4000 characters.")
+      .optional(),
   })
   .refine(
     (data) =>
       Boolean(
         (data.openaiFileIdRefs && data.openaiFileIdRefs.length > 0) ||
         data.imageUrl ||
-        data.imageBase64 ||
-        data.prompt
+        data.imageBase64
       ),
     {
       message:
-        "IMAGE_INPUT_MISSING: Either imageUrl (an approved HTTPS image URL), openaiFileIdRefs (attached image from ChatGPT), imageBase64, or prompt (for topic-only generation) is required.",
+        "IMAGE_INPUT_MISSING: Either imageUrl (an approved HTTPS image URL), openaiFileIdRefs (attached image from ChatGPT), or imageBase64 is required. To generate an image from a topic prompt, call /api/chatgpt/images/generate instead.",
     }
   );
 
@@ -399,6 +403,7 @@ const CreateChatGPTPostBody = z
       .string()
       .trim()
       .min(1, "imageUrl cannot be empty. An authentic HTTPS image URL from an approved OpenAI/DALL-E host is required.")
+      .max(4096, "imageUrl cannot exceed 4096 characters.")
       .url("Invalid imageUrl format. Must be a valid absolute HTTPS URL.")
       .refine((url) => url.startsWith("https://"), {
         message: "Only secure HTTPS image URLs are permitted.",
@@ -417,7 +422,7 @@ const CreateChatGPTPostBody = z
         }
       )
       .optional(),
-    openaiFileIdRefs: z.array(z.any()).optional(),
+    openaiFileIdRefs: z.array(z.any()).max(10).optional(),
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
   })
   .refine(
@@ -754,21 +759,13 @@ export async function POST(req: Request, ctx: Ctx) {
           );
         }
 
-        // Priority 4: Topic-only AI generation request (only when NO image is supplied)
-        if (b.prompt) {
-          const res = await generateImage(b.prompt, "ai");
-          return json(
-            {
-              url: res.url,
-              verified: true,
-              source: "ai",
-              message: "Image generated, verified, and hosted in Supabase Storage.",
-            },
-            201
-          );
-        }
-
-        return json({ error: "IMAGE_INPUT_MISSING: No valid image input provided." }, 400);
+        return json(
+          {
+            error:
+              "IMAGE_INPUT_MISSING: Either imageUrl (an approved HTTPS image URL), openaiFileIdRefs (attached image from ChatGPT), or imageBase64 is required. To generate an image from a topic prompt, call /api/chatgpt/images/generate instead.",
+          },
+          400
+        );
       } catch (err: any) {
         const message = err.message || "Failed to process image.";
         const formatted = message.startsWith("IMAGE_") ? message : `IMAGE_IMPORT_FAILED: ${message}`;
