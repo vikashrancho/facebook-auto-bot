@@ -226,8 +226,8 @@
     "/api/chatgpt/posts/{id}": {
       "get": {
         "operationId": "getChatGPTPost",
-        "summary": "Get publication status of a staged or published post",
-        "description": "Retrieves the current status, Facebook post ID, and publication details for a staged or published post record.",
+        "summary": "Get post details, status, content hash, and review URL",
+        "description": "Retrieves authoritative post details, current publication status, destination Facebook Page, computed contentHash, and dashboard reviewUrl for a draft or published post record. Does not modify or publish the post. Use this Action to retrieve the contentHash and check post state before requesting approval.",
         "parameters": [
           {
             "name": "id",
@@ -278,7 +278,7 @@
       "post": {
         "operationId": "approveChatGPTPost",
         "summary": "Explicitly approve a staged post for publishing",
-        "description": "Must be invoked ONLY after the human user explicitly approves the post preview in a separate user conversational turn. Validates that the content hash matches the staged post, records approval in persistent shared storage, and mints a short-lived, single-use approvalToken (10-minute expiry).",
+        "description": "Must be invoked ONLY when the user explicitly approves publishing the post preview in conversation or requests approval. Validates that the provided contentHash matches the current staged copy and userConfirmed is true. Records user approval in the database and mints a short-lived, single-use approvalToken (10-minute expiry) required for publishChatGPTPost.",
         "x-openai-isConsequential": true,
         "parameters": [
           {
@@ -640,7 +640,19 @@
       },
       "CreatePostResponse": {
         "type": "object",
-        "required": ["postId", "status", "title", "description", "imageUrl", "pageName", "contentHash", "approvalRequired", "message"],
+        "required": [
+          "postId",
+          "status",
+          "title",
+          "description",
+          "hashtags",
+          "imageUrl",
+          "pageName",
+          "contentHash",
+          "reviewUrl",
+          "approvalRequired",
+          "message"
+        ],
         "properties": {
           "postId": {
             "type": "string",
@@ -715,7 +727,7 @@
       },
       "ApprovePostResponse": {
         "type": "object",
-        "required": ["approved", "postId", "approvalToken", "expiresAt", "message"],
+        "required": ["approved", "postId", "contentHash", "approvalToken", "expiresAt", "reviewUrl", "message"],
         "properties": {
           "approved": {
             "type": "boolean",
@@ -725,6 +737,11 @@
             "type": "string",
             "format": "uuid",
             "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "contentHash": {
+            "type": "string",
+            "description": "The verified content hash that this approval and approvalToken bind to.",
+            "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           },
           "approvalToken": {
             "type": "string",
@@ -826,7 +843,16 @@
       },
       "PostStatusResponse": {
         "type": "object",
-        "required": ["postId", "status", "title", "description", "imageUrl"],
+        "required": [
+          "postId",
+          "status",
+          "title",
+          "description",
+          "imageUrl",
+          "contentHash",
+          "reviewUrl",
+          "approvedByUser"
+        ],
         "properties": {
           "postId": {
             "type": "string",
@@ -855,6 +881,29 @@
           "pageName": {
             "type": "string",
             "nullable": true
+          },
+          "contentHash": {
+            "type": "string",
+            "description": "Authoritative SHA-256 hash of the current post content and destination Page. Must be supplied to approveChatGPTPost when approving.",
+            "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "reviewUrl": {
+            "type": "string",
+            "description": "Authenticated dashboard URL for human review of this post.",
+            "example": "/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "approvedByUser": {
+            "type": "boolean",
+            "description": "Indicates whether this post has already received explicit user approval."
+          },
+          "approvedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "isContentUnchangedSinceApproval": {
+            "type": "boolean",
+            "description": "True if the post content matches the content hash recorded when approved."
           },
           "facebookPostId": {
             "type": "string",

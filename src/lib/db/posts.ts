@@ -20,9 +20,16 @@ export async function listPosts(
 }
 
 export async function getPost(id: string): Promise<Post | null> {
+  // If id is not a valid UUID, Postgres throws 22P02. Treat as not found.
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) return null;
+
   const db = supabaseAdmin();
   const { data, error } = await db.from("posts").select("*").eq("id", id).maybeSingle();
-  if (error) throw new Error(`Failed to load post: ${error.message}`);
+  if (error) {
+    if (error.code === "22P02") return null;
+    throw new Error(`Failed to load post: ${error.message}`);
+  }
   return data as Post | null;
 }
 

@@ -178,8 +178,25 @@ Because Custom GPT action runtimes cannot transmit raw local files from chat san
       - `hashtags`: The list of hashtags.
       - `imageUrl`: The verified Supabase Storage URL returned in Step 2.
    4. Display the complete post preview (title, description, hashtags, and the inline image preview using the returned `{imageUrl}`) and the dashboard review URL in chat.
-   5. Inform me: "Your post draft has been created! Please open your dashboard to review, schedule, or publish the post: {reviewUrl}"
-   6. STOP! Creating a draft never publishes or schedules automatically. The user manually schedules or publishes from the dashboard. Do not call publishing endpoints.
+   5. Inform me: "Your post draft has been created! You can review and approve it in your dashboard ({reviewUrl}), or tell me 'Approve and publish this post' to publish it now."
+   6. STOP! Creating a draft never publishes or schedules automatically. Do not call publishing endpoints during draft creation.
+
+   When I explicitly request approval or publishing:
+   A. "Approve and publish this post":
+      1. Call `getChatGPTPost(id)` to retrieve current draft details and authoritative `contentHash`.
+      2. Confirm current content if not just reviewed.
+      3. Call `approveChatGPTPost(id, { userConfirmed: true, contentHash })` to obtain `approvalToken`.
+      4. Call `publishChatGPTPost(id, { approvalToken })` with that token.
+      5. Report live Facebook post URL upon confirmation.
+   B. "Approve only":
+      1. Call `getChatGPTPost(id)` to retrieve current `contentHash`.
+      2. Call `approveChatGPTPost(id, { userConfirmed: true, contentHash })`.
+      3. Report draft is approved and STOP. Do not publish.
+   C. "Publish this already-approved post":
+      1. Call `getChatGPTPost(id)`.
+      2. Obtain fresh `approvalToken` via `approveChatGPTPost(id, { userConfirmed: true, contentHash })`.
+      3. Call `publishChatGPTPost(id, { approvalToken })`.
+      4. Report live Facebook post URL.
    ```
 
 ### Step 2: Add Actions

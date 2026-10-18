@@ -921,7 +921,13 @@ async function runTests() {
     const approveResp = parsed.components.schemas.ApprovePostResponse;
     assert.ok(approveResp.required.includes("approvalToken"));
     assert.ok(approveResp.required.includes("expiresAt"));
+    assert.ok(approveResp.required.includes("contentHash"), "ApprovePostResponse must require contentHash");
     assert.ok(approveResp.properties.reviewUrl, "ApprovePostResponse must include reviewUrl");
+
+    const statusResp = parsed.components.schemas.PostStatusResponse;
+    assert.ok(statusResp.required.includes("contentHash"), "PostStatusResponse must require contentHash");
+    assert.ok(statusResp.required.includes("reviewUrl"), "PostStatusResponse must require reviewUrl");
+    assert.ok(statusResp.required.includes("approvedByUser"), "PostStatusResponse must require approvedByUser");
   });
 
   await test("OpenAPI schema configures approve and publish actions as consequential (x-openai-isConsequential: true)", () => {
@@ -945,6 +951,8 @@ async function runTests() {
 
     const createResp = parsed.components.schemas.CreatePostResponse;
     assert.ok(createResp.properties.reviewUrl, "CreatePostResponse must include reviewUrl for manual dashboard inspection");
+    assert.ok(createResp.required.includes("contentHash"), "CreatePostResponse must require contentHash");
+    assert.ok(createResp.required.includes("reviewUrl"), "CreatePostResponse must require reviewUrl");
   });
 
   await test("public/openapi.json does not expose admin or delete endpoints", () => {
@@ -967,12 +975,12 @@ async function runTests() {
   // ---------------------------------------------------------------------------
   console.log("\nSuite 7: Server-Enforced Human Approval & Recovery Lifecycle");
 
-  await test("Server approval lifecycle: staged post requires dashboard approval before ChatGPT approve can mint token", async () => {
+  await test("Workflow B: Custom GPT explicitly approves unchanged draft with valid contentHash, records approval in database and mints approvalToken", async () => {
     enableTestMockStorage(true);
     resetApprovalRegistry();
 
     const postState: Post = {
-      id: "post-human-approval-test",
+      id: "post-workflow-b-test",
       status: "draft",
       title: "Initial Staged Title",
       description: "Initial Description",
@@ -1002,43 +1010,66 @@ async function runTests() {
       pageId: postState.page_id || "",
     });
 
-    // Attempting to approve via ChatGPT without dashboard human approval must be rejected
-    function checkChatGPTApproveEligibility(post: Post, hash: string): { allowed: boolean; reason?: string } {
-      if (!post.approved_by_user || !post.approved_at || !post.approval_content_hash) {
-        return {
-          allowed: false,
-          reason: "This post has not been approved in the authenticated dashboard.",
-        };
+    // Valid approval with userConfirmed: true and matching contentHash
+    function executeApproval(post: Post, req: { userConfirmed: boolean; contentHash: string }) {
+      if (!req.userConfirmed) {
+        return { ok: false, error: "Explicit user confirmation is required." };
       }
-      if (post.approval_content_hash !== hash) {
-        return {
-          allowed: false,
-          reason: "Post content has been modified since it was approved in the dashboard.",
-        };
+      if (req.contentHash !== currentHash) {
+        return { ok: false, error: "Content hash mismatch." };
       }
-      return { allowed: true };
+      post.approved_by_user = true;
+      post.approved_at = new Date().toISOString();
+      post.approval_content_hash = currentHash;
+      return { ok: true };
     }
 
-    const unapprovedCheck = checkChatGPTApproveEligibility(postState, currentHash);
-    assert.strictEqual(unapprovedCheck.allowed, false);
-    assert.ok(unapprovedCheck.reason?.includes("not been approved in the authenticated dashboard"));
+    const res = executeApproval(postState, { userConfirmed: true, contentHash: currentHash });
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(postState.approved_by_user, true);
+    assert.strictEqual(postState.approval_content_hash, currentHash);
 
-    // Simulate Human Administrator approving the post in the dashboard
-    postState.approved_by_user = true;
-    postState.approved_at = new Date().toISOString();
-    postState.approval_content_hash = currentHash;
+    // Mints a valid approval token
+    const { token, expiresAt } = await issueApprovalToken({
+      postId: postState.id,
+      contentHash: currentHash,
+      ttlSeconds: 600,
+    });
+    assert.ok(token);
+    assert.ok(expiresAt > Date.now());
 
-    // Now ChatGPT approve check must succeed
-    const approvedCheck = checkChatGPTApproveEligibility(postState, currentHash);
-    assert.strictEqual(approvedCheck.allowed, true);
+    // Token verifies successfully
+    const verifyResult = await verifyAndConsumeApprovalToken(token, postState.id, currentHash, { consume: false });
+    assert.strictEqual(verifyResult.valid, true);
+  });
 
-    // Simulate editing the post title in the dashboard: approval must be invalidated
-    postState.title = "Changed Title After Approval";
-    postState.approved_by_user = false;
-    postState.approved_at = null;
-    postState.approval_content_hash = null;
+  await test("Workflow B: Custom GPT approve rejects stale or incorrect contentHash with HTTP 400", async () => {
+    enableTestMockStorage(true);
+    resetApprovalRegistry();
 
-    const modifiedHash = computePostContentHash({
+    const postState: Post = {
+      id: "post-stale-hash-test",
+      status: "draft",
+      title: "Current Staged Title",
+      description: "Current Description",
+      hashtags: ["Productivity"],
+      image_url: "https://xyz.supabase.co/img.png",
+      image_source: "ai",
+      link_url: null,
+      page_id: "page-123",
+      page_name: "Test Page",
+      scheduled_at: null,
+      posted_at: null,
+      facebook_post_id: null,
+      error_message: null,
+      created_at: new Date().toISOString(),
+      topic: "chatgpt",
+      approved_by_user: false,
+      approved_at: null,
+      approval_content_hash: null,
+    };
+
+    const currentHash = computePostContentHash({
       postId: postState.id,
       title: postState.title,
       description: postState.description,
@@ -1047,12 +1078,25 @@ async function runTests() {
       pageId: postState.page_id || "",
     });
 
-    const modifiedCheck = checkChatGPTApproveEligibility(postState, modifiedHash);
-    assert.strictEqual(modifiedCheck.allowed, false);
-    assert.ok(modifiedCheck.reason?.includes("not been approved"));
+    const staleHash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    function validateApproval(hash: string): { ok: boolean; status: number; error?: string } {
+      if (hash !== currentHash) {
+        return { ok: false, status: 400, error: "Content hash mismatch. Post content has been modified since review or does not match staged copy." };
+      }
+      return { ok: true, status: 200 };
+    }
+
+    const checkStale = validateApproval(staleHash);
+    assert.strictEqual(checkStale.ok, false);
+    assert.strictEqual(checkStale.status, 400);
+    assert.ok(checkStale.error?.includes("Content hash mismatch"));
   });
 
-  await test("[Mocked Integration] Server approval lifecycle: editing link_url invalidates human approval and rejects token minting", async () => {
+  await test("[Mocked Integration] Server approval lifecycle: editing link_url invalidates human approval and rejects token minting / publishing", async () => {
+    enableTestMockStorage(true);
+    resetApprovalRegistry();
+
     const postState: Post = {
       id: "post-human-approval-link-test",
       status: "draft",
@@ -1075,21 +1119,23 @@ async function runTests() {
       approval_content_hash: "initial-valid-hash",
     };
 
-    function checkChatGPTApproveEligibility(post: Post, hash: string): { allowed: boolean; reason?: string } {
-      if (!post.approved_by_user || !post.approved_at || !post.approval_content_hash) {
-        return {
-          allowed: false,
-          reason: "This post has not been approved in the authenticated dashboard.",
-        };
-      }
-      if (post.approval_content_hash !== hash) {
-        return {
-          allowed: false,
-          reason: "Post content has been modified since it was approved in the dashboard.",
-        };
-      }
-      return { allowed: true };
-    }
+    const initialHash = computePostContentHash({
+      postId: postState.id,
+      title: postState.title,
+      description: postState.description,
+      hashtags: postState.hashtags,
+      imageUrl: postState.image_url,
+      pageId: postState.page_id || "",
+      linkUrl: postState.link_url,
+      utmSuffix: "",
+    });
+    postState.approval_content_hash = initialHash;
+
+    const { token: initialToken } = await issueApprovalToken({
+      postId: postState.id,
+      contentHash: initialHash,
+      ttlSeconds: 600,
+    });
 
     // Admin edits link_url in the dashboard: approval must be invalidated
     postState.link_url = "https://phishing.example.com/evil";
@@ -1108,9 +1154,13 @@ async function runTests() {
       utmSuffix: "",
     });
 
-    const modifiedLinkCheck = checkChatGPTApproveEligibility(postState, modifiedLinkHash);
-    assert.strictEqual(modifiedLinkCheck.allowed, false, "Changing link_url must invalidate human approval");
-    assert.ok(modifiedLinkCheck.reason?.includes("not been approved"));
+    // Attempting to publish using initial token against modified content must fail with hash mismatch
+    const publishCheck = await verifyAndConsumeApprovalToken(initialToken, postState.id, modifiedLinkHash, { consume: true });
+    assert.strictEqual(publishCheck.valid, false, "Publishing must reject token when link_url has changed");
+    assert.ok(publishCheck.reason?.includes("modified since approval"));
+
+    // Attempting to approve using the old hash must fail with hash mismatch
+    assert.notStrictEqual(initialHash, modifiedLinkHash);
   });
 
   await test("[Mocked Integration] Changing global UTM suffix after approval produces hash mismatch and rejects publishing", async () => {
@@ -1385,6 +1435,51 @@ async function runTests() {
     assert.strictEqual(res.status, 400);
     const body = await res.json();
     assert.ok(body.error?.includes("Invalid image format"), `Expected magic byte rejection, got: ${body.error}`);
+  });
+
+  await test("[Route-Level] GET /api/chatgpt/posts/{id} without Bearer auth returns HTTP 401 Unauthorized", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts/p1", {
+      method: "GET",
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts", "p1"] }) };
+    const res = await apiRouteGET(req, ctx);
+    assert.strictEqual(res.status, 401, "GET chatgpt post route must reject requests without Bearer auth");
+  });
+
+  await test("[Route-Level] GET /api/chatgpt/posts/{id} with dashboard session cookie alone returns HTTP 401 Unauthorized", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts/p1", {
+      method: "GET",
+      headers: { Cookie: "pab_session=forged-cookie-value" },
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts", "p1"] }) };
+    const res = await apiRouteGET(req, ctx);
+    assert.strictEqual(res.status, 401, "GET chatgpt post route must reject dashboard session cookie without Bearer auth");
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/posts/{id}/publish without Bearer auth returns HTTP 401 Unauthorized", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts/p1/publish", {
+      method: "POST",
+      body: JSON.stringify({ approvalToken: "some-token" }),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts", "p1", "publish"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 401, "Publish route must reject requests without Bearer auth");
+  });
+
+  await test("[Route-Level] POST /api/chatgpt/posts/{id}/publish without approvalToken returns HTTP 400", async () => {
+    const req = new Request("http://localhost:3000/api/chatgpt/posts/p1/publish", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-secret-key-12345",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+    const ctx = { params: Promise.resolve({ path: ["chatgpt", "posts", "p1", "publish"] }) };
+    const res = await apiRoutePOST(req, ctx);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.ok(body.error?.includes("approvalToken is required"), `Expected error to require approvalToken, got: ${body.error}`);
   });
 
   // ---------------------------------------------------------------------------

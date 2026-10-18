@@ -291,16 +291,43 @@ export async function GET(req: Request, ctx: Ctx) {
 
     // chatgpt/posts/<id>
     if (path.length === 3 && path[0] === "chatgpt" && path[1] === "posts") {
-      const post = await getPost(path[2]);
+      const id = path[2];
+      const post = await getPost(id);
       if (!post) return notFound();
+
+      // Reject corrupted or incomplete post records
+      if (!post.title || !post.image_url) {
+        return json({ error: "Post record is missing required fields (title, image_url)." }, 422);
+      }
+
+      const settings = await getSettings();
+      const pageId = post.page_id ?? settings.default_page_id ?? "";
+      const contentHash = computePostContentHash({
+        postId: post.id,
+        title: post.title,
+        description: post.description,
+        hashtags: post.hashtags,
+        imageUrl: post.image_url,
+        pageId,
+        linkUrl: post.link_url,
+        utmSuffix: settings.utm_suffix,
+      });
+
+      const isContentUnchangedSinceApproval = !post.approval_content_hash || post.approval_content_hash === contentHash;
+
       return json({
         postId: post.id,
         status: post.status === "draft" ? "pending_review" : post.status,
         title: post.title,
         description: post.description,
-        hashtags: post.hashtags,
+        hashtags: post.hashtags || [],
         imageUrl: post.image_url,
         pageName: post.page_name,
+        contentHash,
+        reviewUrl: `/dashboard/queue?post=${post.id}`,
+        approvedByUser: Boolean(post.approved_by_user),
+        approvedAt: post.approved_at,
+        isContentUnchangedSinceApproval,
         facebookPostId: post.facebook_post_id,
         facebookPostUrl: post.facebook_post_id ? facebookPostUrl(post.facebook_post_id) : null,
         postedAt: post.posted_at,
@@ -990,6 +1017,10 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ error: "Post has already been published to Facebook." }, 400);
       }
 
+      if (post.status === "publishing") {
+        return json({ error: "Post is currently being published by another request." }, 409);
+      }
+
       const parsed = ApproveChatGPTPostBody.safeParse(await req.json().catch(() => null));
       if (!parsed.success || !parsed.data.userConfirmed) {
         return json(
@@ -1025,31 +1056,12 @@ export async function POST(req: Request, ctx: Ctx) {
         );
       }
 
-      // Server-enforced human approval verification:
-      // The post MUST have been explicitly reviewed and approved in the authenticated dashboard.
-      if (!post.approved_by_user || !post.approved_at || !post.approval_content_hash) {
-        return json(
-          {
-            error:
-              "This post has not been approved in the authenticated dashboard. " +
-              "A human administrator must review and approve the post in the dashboard at reviewUrl before an approval token can be minted.",
-            reviewUrl: `/dashboard/queue?post=${post.id}`,
-            requiresDashboardApproval: true,
-          },
-          403
-        );
-      }
-
-      if (post.approval_content_hash !== currentHash) {
-        return json(
-          {
-            error:
-              "Post content has been modified since it was approved in the dashboard. Please re-review and approve in the dashboard.",
-            reviewUrl: `/dashboard/queue?post=${post.id}`,
-          },
-          409
-        );
-      }
+      // Record human user approval in the database (persisting approval state)
+      await updatePostRecord(post.id, {
+        approved_by_user: true,
+        approved_at: new Date().toISOString(),
+        approval_content_hash: currentHash,
+      });
 
       try {
         const { token, expiresAt } = await issueApprovalToken({
@@ -1061,6 +1073,7 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({
           approved: true,
           postId: post.id,
+          contentHash: currentHash,
           approvalToken: token,
           expiresAt: new Date(expiresAt).toISOString(),
           reviewUrl: `/dashboard/queue?post=${post.id}`,
@@ -1077,6 +1090,11 @@ export async function POST(req: Request, ctx: Ctx) {
 
     // chatgpt/posts/<id>/publish
     if (path.length === 4 && path[0] === "chatgpt" && path[1] === "posts" && path[3] === "publish") {
+      const parsed = PublishChatGPTPostBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: "approvalToken is required to publish." }, 400);
+      }
+
       const id = path[2];
       const post = await getPost(id);
       if (!post) return notFound();
@@ -1092,11 +1110,6 @@ export async function POST(req: Request, ctx: Ctx) {
           postedAt: post.posted_at,
           message: "Post has already been published.",
         });
-      }
-
-      const parsed = PublishChatGPTPostBody.safeParse(await req.json().catch(() => null));
-      if (!parsed.success) {
-        return json({ error: "approvalToken is required to publish." }, 400);
       }
 
       // Block automatic retries on posts with uncertain publication outcomes (e.g. timeouts)
