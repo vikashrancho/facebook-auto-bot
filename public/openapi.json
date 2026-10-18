@@ -60,7 +60,7 @@
       "post": {
         "operationId": "importChatGPTImage",
         "summary": "Import ChatGPT-generated or attached image into application storage",
-        "description": "Imports an image already generated in the ChatGPT conversation (via DALL-E) or attached by the user. Accepts the file reference via openaiFileIdRefs, an approved HTTPS imageUrl, or base64 bytes. Downloads original image bytes and stores them permanently in Supabase Storage, returning a verified public HTTPS URL. Does NOT require any application-side image generation keys (OpenAI or Pexels). Does NOT generate new images or substitute missing images. This is the REQUIRED operation for the Custom GPT's normal post workflow after generating an image in chat.",
+        "description": "Imports an image generated in ChatGPT chat (via DALL-E) or attached by the user into Supabase Storage. Accepts openaiFileIdRefs, image URL, or base64. Returns verified hosted HTTPS URL. Does not require OpenAI/Pexels API keys.",
         "requestBody": {
           "required": true,
           "content": {
@@ -109,7 +109,7 @@
       "post": {
         "operationId": "generateChatGPTImage",
         "summary": "Application-side image generation (uses app-configured AI provider)",
-        "description": "Generates an image on the application server using the application's configured backend provider (DALL-E 3 or Pexels). Requires application-side API keys configured in application settings. The Custom GPT's normal post workflow must NOT call this operation because ChatGPT generates images directly in the chat using its built-in Image Generation tool.",
+        "description": "App-side image generation using configured backend provider (DALL-E 3 or Pexels). Requires API keys in app settings. Custom GPT normal workflow must NOT call this operation because ChatGPT generates images directly in chat.",
         "requestBody": {
           "required": true,
           "content": {
@@ -227,7 +227,7 @@
       "get": {
         "operationId": "getChatGPTPost",
         "summary": "Get post details, status, content hash, and review URL",
-        "description": "Retrieves authoritative post details, current publication status, destination Facebook Page, computed contentHash, and dashboard reviewUrl for a draft or published post record. Does not modify or publish the post. Use this Action to retrieve the contentHash and check post state before requesting approval.",
+        "description": "Retrieves post details, status, contentHash, and reviewUrl for a draft or published post. Does not modify or publish. Use to retrieve contentHash and check post state before requesting approval.",
         "parameters": [
           {
             "name": "id",
@@ -278,7 +278,7 @@
       "post": {
         "operationId": "approveChatGPTPost",
         "summary": "Explicitly approve a staged post for publishing",
-        "description": "Must be invoked ONLY when the user explicitly approves publishing the post preview in conversation or requests approval. Validates that the provided contentHash matches the current staged copy and userConfirmed is true. Records user approval in the database and mints a short-lived, single-use approvalToken (10-minute expiry) required for publishChatGPTPost.",
+        "description": "Must be invoked ONLY when user explicitly approves publishing. Validates contentHash matches staged copy and userConfirmed is true. Records approval and returns single-use approvalToken required for publishChatGPTPost.",
         "x-openai-isConsequential": true,
         "parameters": [
           {
@@ -462,7 +462,7 @@
       "get": {
         "operationId": "getChatGPTContentRequest",
         "summary": "Retrieve queued content request from dashboard",
-        "description": "Retrieves the topic, platform, content preferences, and constraints for a queued content creation request submitted by the user from the dashboard. Automatically marks a pending request as processing. Does NOT call any external AI model or image generator. Does NOT approve or publish.",
+        "description": "Retrieves topic, platform, and content preferences for a queued content request created from dashboard. Marks request as processing. Does not call external AI models or publish.",
         "parameters": [
           {
             "name": "requestId",
