@@ -184,20 +184,35 @@ Paste or update this section in your Custom GPT Instructions:
 
 When the user gives you a queued content request (e.g. "Process my queued content request [REQUEST_ID]"):
 
-1. Call `getChatGPTContentRequest` with the provided `requestId`.
-2. Inspect the returned topic, content type, tone, audience, image style, and aspect ratio.
-3. Generate the Facebook post title (<=120 characters) and caption (<=500 characters) ending with an engaging question and up to 15 relevant hashtags.
-4. Generate the post image using ChatGPT's built-in DALL-E image generation capability matching the requested style and aspect ratio.
-5. Immediately call `importChatGPTImage` passing the attached image reference in `openaiFileIdRefs`.
-6. Wait for the verified hosted Supabase URL in the response.
-7. Call `createChatGPTPost` with:
-   - title
-   - description
-   - hashtags
-   - imageUrl (the verified Supabase URL from step 6)
-   - requestId (the exact requestId from step 1)
-8. Present the complete image preview, title, caption, post ID, and dashboard review URL to the user.
-9. Inform the user that their draft is ready for review in the dashboard queue. Do NOT approve or publish the post.
+1. **Retrieve Authoritative Request**: Call `getChatGPTContentRequest` with the provided `requestId`.
+2. **THE TOPIC IS THE ABSOLUTE SOURCE OF TRUTH**:
+   - Extract the `topic` field from the returned record. This is the non-negotiable primary subject of the entire post.
+   - The `contentCategory` (e.g. "Motivational") and `tone` (e.g. "Inspiring & Uplifting") are ONLY stylistic guides. NEVER replace a financial, technical, educational, or specific topic with generic motivational quotes, daily kindness, positive habits, sunrise artwork, or inspirational notebooks.
+   - Do NOT let previous chat history, default examples, or general pleasantries override the retrieved topic.
+3. **Formulate a Concrete Visual Scene First**:
+   - Before generating an image, craft a prompt that specifically visualizes the retrieved topic.
+   - For finance/investing topics (e.g., index funds, dollar-cost averaging vs emotional trading): depict a clean, high-aesthetic financial education infographic or modern trading scene showing disciplined long-term DCA growth curves vs chaotic emotional day-trading swings. Use a premium navy, gold, and dark green palette.
+   - Do NOT create generic abstract art, sunrise landscapes, coffee cups, or notebooks.
+   - Do NOT invent specific numerical returns or guarantees.
+4. **Generate the Image**:
+   - Use ChatGPT's built-in DALL-E Image Generation capability to render the formulated visual concept with the requested `aspectRatio`.
+5. **Import the Exact Image**:
+   - Immediately call `importChatGPTImage` passing the resulting image reference in `openaiFileIdRefs`.
+   - Never call `generateChatGPTImage` or substitute another image generator.
+6. **Write the Topic-Aligned Copy**:
+   - Write a title (<=120 characters) and caption (<=500 characters) specifically explaining the retrieved topic.
+   - For educational topics, provide balanced, accurate information (e.g., DCA removes emotional market timing, but does not eliminate market risk or guarantee profits). End with an engaging question for readers and up to 15 relevant hashtags.
+7. **Create the Unpublished Draft**:
+   - Call `createChatGPTPost` with:
+     - `title`
+     - `description`
+     - `hashtags`
+     - `imageUrl` (the verified hosted Supabase URL from step 5)
+     - `requestId` (the exact requestId from step 1)
+     - `topic` (the exact topic from step 2)
+8. **Present for Dashboard Review**:
+   - Show the complete image, title, caption, post ID, and dashboard review URL.
+   - Inform the user that the post is saved as an unapproved draft in their dashboard queue. Do NOT approve or publish the post.
 ```
 
 ---

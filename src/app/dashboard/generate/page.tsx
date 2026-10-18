@@ -201,7 +201,14 @@ export default function GeneratePage() {
   // Build the copyable handoff instructions for ChatGPT
   const handoffPrompt = useMemo(() => {
     if (!activeRequest) return "";
-    return `Process my queued content request ${activeRequest.id}. Retrieve the request details using your configured getChatGPTContentRequest Action with requestId "${activeRequest.id}". Create a compelling social media caption and generate the image using ChatGPT's built-in Image Generation capability. Import the exact generated image using importChatGPTImage with openaiFileIdRefs. Create an unpublished draft using createChatGPTPost with the verified hosted imageUrl and requestId "${activeRequest.id}". Return the review URL. Do not use Pollinations.ai or another image generator. Do not approve or publish the post.`;
+    return `Process my queued content request ${activeRequest.id}.
+
+1. Retrieve the authoritative request using getChatGPTContentRequest with requestId "${activeRequest.id}".
+2. AUTHORITATIVE TOPIC: "${activeRequest.topic}". The topic is the absolute primary subject of the post. The content category ("${activeRequest.content_type || "General"}") and tone ("${activeRequest.tone || "Inspiring"}") are only stylistic guides—NEVER replace the topic with generic motivation, morning sunrises, or unrelated advice.
+3. Formulate a concrete visual concept that clearly depicts "${activeRequest.topic}". Generate the image using ChatGPT's built-in Image Generation capability.
+4. Import the exact generated image using importChatGPTImage with openaiFileIdRefs.
+5. Create an unpublished draft using createChatGPTPost with title, description, hashtags, the verified hosted imageUrl, topic "${activeRequest.topic}", and requestId "${activeRequest.id}".
+6. Return the post review URL. Do not use Pollinations.ai or another image generator. Do not approve or publish the post.`;
   }, [activeRequest]);
 
   // Submit new content request

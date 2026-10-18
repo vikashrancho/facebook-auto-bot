@@ -160,7 +160,7 @@ async function run() {
 
   // 5. getChatGPTContentRequest with Valid Created ID
   if (createdRequestId) {
-    await test("getChatGPTContentRequest retrieves request and transitions status to processing", async () => {
+    await test("getChatGPTContentRequest retrieves request with authoritative topic, aliases, and mandate", async () => {
       const req = new Request(`http://localhost/api/chatgpt/requests/${createdRequestId}`, {
         method: "GET",
         headers: {
@@ -172,9 +172,25 @@ async function run() {
       const data = await res.json();
       assert.strictEqual(data.requestId, createdRequestId);
       assert.strictEqual(data.status, "processing");
+      assert.strictEqual(data.topic, "Why compound interest beats day trading over 20 years");
+      assert.strictEqual(data.contentCategory, "Investing Tips");
+      assert.strictEqual(data.contentType, "Investing Tips");
+      assert.strictEqual(data.targetAudience, "Long-term wealth builders");
+      assert.ok(data.targetPage);
+      assert.ok(data.topicMandate);
       assert.ok(data.constraints);
-      assert.strictEqual(data.constraints.requireHostedImage, true);
-      assert.strictEqual(data.constraints.mustNotPublishAutomatically, true);
+      assert.strictEqual(data.constraints.topicMustBePrimarySubject, true);
+    });
+
+    await test("getChatGPTContentRequest authenticates with X-Integration-Key header", async () => {
+      const req = new Request(`http://localhost/api/chatgpt/requests/${createdRequestId}`, {
+        method: "GET",
+        headers: {
+          "x-integration-key": validApiKey,
+        },
+      });
+      const res = await GET(req, { params: Promise.resolve({ path: ["chatgpt", "requests", createdRequestId!] }) });
+      assert.strictEqual(res.status, 200);
     });
 
     // 6. Import verified image then stage post with linked requestId
@@ -200,7 +216,7 @@ async function run() {
       hostedImageUrl = data.url;
     });
 
-    await test("createChatGPTPost links draft to requestId and marks request complete", async () => {
+    await test("createChatGPTPost preserves original request topic in post record", async () => {
       const req = new Request("http://localhost/api/chatgpt/posts", {
         method: "POST",
         headers: {
@@ -222,6 +238,7 @@ async function run() {
       assert.ok(data.postId);
       assert.strictEqual(data.requestId, createdRequestId);
       assert.strictEqual(data.status, "pending_review");
+      assert.strictEqual(data.topic, "Why compound interest beats day trading over 20 years");
       assert.ok(data.reviewUrl);
       assert.strictEqual(data.approvalRequired, true);
       testCreatedPostId = data.postId;
@@ -248,9 +265,61 @@ async function run() {
       assert.strictEqual(res.status, 200, `Expected 200 for idempotent re-call, got ${res.status}`);
       const data = await res.json();
       assert.strictEqual(data.requestId, createdRequestId);
+      assert.strictEqual(data.topic, "Why compound interest beats day trading over 20 years");
       if (testCreatedPostId) {
         assert.strictEqual(data.postId, testCreatedPostId);
       }
+    });
+
+    // 8. Already processed request returns 409
+    await test("getChatGPTContentRequest returns 409 when request is already processed into draft", async () => {
+      const req = new Request(`http://localhost/api/chatgpt/requests/${createdRequestId}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${validApiKey}`,
+        },
+      });
+      const res = await GET(req, { params: Promise.resolve({ path: ["chatgpt", "requests", createdRequestId!] }) });
+      assert.strictEqual(res.status, 409);
+      const data = await res.json();
+      assert.ok(data.error);
+      assert.strictEqual(data.status, "draft_created");
+      assert.ok(data.postId);
+    });
+
+    // 9. Processing a new distinct request does not leak or reuse previous topic
+    await test("Distinct second request preserves its own topic independently", async () => {
+      const createReq = new Request("http://localhost/api/content-requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          cookie: sessionCookieHeader,
+        },
+        body: JSON.stringify({
+          topic: "Why index funds and dollar-cost averaging beat emotional trading over 20 years",
+          platform: "facebook",
+          contentType: "Motivational",
+          tone: "Inspiring & Uplifting",
+          audience: "Long-term wealth builders",
+        }),
+      });
+      const createRes = await POST(createReq, { params: Promise.resolve({ path: ["content-requests"] }) });
+      assert.strictEqual(createRes.status, 201);
+      const createData = await createRes.json();
+      const secondId = createData.request.id;
+
+      const getReq = new Request(`http://localhost/api/chatgpt/requests/${secondId}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${validApiKey}`,
+        },
+      });
+      const getRes = await GET(getReq, { params: Promise.resolve({ path: ["chatgpt", "requests", secondId] }) });
+      assert.strictEqual(getRes.status, 200);
+      const getData = await getRes.json();
+      assert.strictEqual(getData.topic, "Why index funds and dollar-cost averaging beat emotional trading over 20 years");
+      assert.strictEqual(getData.contentCategory, "Motivational");
+      assert.notStrictEqual(getData.topic, "Why compound interest beats day trading over 20 years");
     });
   }
 

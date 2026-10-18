@@ -770,6 +770,11 @@
             "type": "string",
             "description": "Optional UUID of the dashboard content request to link and mark complete upon staging.",
             "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "topic": {
+            "type": "string",
+            "description": "Authoritative topic of the post. Preserves the exact user topic.",
+            "example": "Why index funds and dollar-cost averaging beat emotional trading over 20 years"
           }
         }
       },
@@ -799,6 +804,11 @@
             "format": "uuid",
             "description": "UUID of the linked dashboard content request, if provided.",
             "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "topic": {
+            "type": "string",
+            "description": "Authoritative originating topic associated with this staged draft.",
+            "example": "Why index funds and dollar-cost averaging beat emotional trading over 20 years"
           },
           "status": {
             "type": "string",
@@ -1102,25 +1112,48 @@
           },
           "topic": {
             "type": "string",
-            "example": "Long-term compound interest vs short-term speculation"
+            "description": "The exact user-submitted topic. This is the non-negotiable primary subject.",
+            "example": "Why index funds and dollar-cost averaging beat emotional trading over 20 years"
+          },
+          "contentCategory": {
+            "type": "string",
+            "description": "Content category style (e.g. Motivational). Note: category does NOT replace topic.",
+            "example": "Motivational"
+          },
+          "contentType": {
+            "type": "string",
+            "description": "Alias for contentCategory.",
+            "example": "Motivational"
           },
           "platform": {
             "type": "string",
             "example": "facebook"
           },
-          "contentType": {
+          "targetPage": {
             "type": "string",
-            "example": "Investing Tips"
+            "description": "Name of target Facebook page.",
+            "example": "Invest In Stock Market"
           },
           "tone": {
             "type": "string",
             "nullable": true,
-            "example": "Inspiring and analytical"
+            "example": "Inspiring & Uplifting"
+          },
+          "targetAudience": {
+            "type": "string",
+            "nullable": true,
+            "description": "Target audience persona.",
+            "example": "Long-term wealth builders"
           },
           "audience": {
             "type": "string",
             "nullable": true,
-            "example": "Beginner retail investors"
+            "example": "Long-term wealth builders"
+          },
+          "topicMandate": {
+            "type": "string",
+            "description": "Mandate requiring the GPT to maintain the topic as the primary subject.",
+            "example": "The topic field is the authoritative subject. Do not substitute with generic motivation."
           },
           "imageStyle": {
             "type": "string",

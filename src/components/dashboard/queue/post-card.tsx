@@ -126,6 +126,13 @@ export function PostCard({
                 </span>
               )}
             </span>
+
+            {/* Originating Topic Badge */}
+            {post.topic && !post.topic.startsWith("chatgpt:") && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-0.5 text-xs font-medium text-primary truncate max-w-[280px]" title={post.topic}>
+                <span className="font-semibold text-primary/70">Topic:</span> {post.topic}
+              </span>
+            )}
           </div>
 
           {/* Title - Natural wrapping */}

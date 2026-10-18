@@ -131,8 +131,16 @@ export function PostPreviewDrawer({
 
             {/* Post Information */}
             <div className="space-y-4">
-              {/* Title */}
-              <div>
+              {/* Title & Topic */}
+              <div className="space-y-1.5">
+                {post.topic && (
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <span className="font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">Originating Topic:</span>
+                    <span className="rounded-md bg-surface-2 px-2 py-0.5 text-xs font-medium text-foreground border border-border">
+                      {post.topic.startsWith("chatgpt:") ? "ChatGPT Generated" : post.topic}
+                    </span>
+                  </div>
+                )}
                 <h3 className="font-heading text-xl font-bold text-foreground leading-snug">
                   {post.title}
                 </h3>

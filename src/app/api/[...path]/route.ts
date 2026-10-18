@@ -383,6 +383,25 @@ export async function GET(req: Request, ctx: Ctx) {
           409
         );
       }
+      if (request.status === "draft_created" && request.post_id) {
+        return json(
+          {
+            error: `Content request '${id}' has already been processed into draft post '${request.post_id}'. Review draft at: ${request.review_url || `/dashboard/queue?post=${request.post_id}`}. To create a new post, submit a new content request.`,
+            requestId: request.id,
+            status: request.status,
+            postId: request.post_id,
+            reviewUrl: request.review_url,
+          },
+          409
+        );
+      }
+      if (!request.topic || request.topic.trim().length < 2) {
+        return json(
+          { error: "Content request contains no valid topic. A specific topic is required." },
+          400
+        );
+      }
+
       let currentRequest = request;
       if (request.status === "pending_chatgpt") {
         const updated = await markContentRequestProcessing(id);
@@ -393,23 +412,29 @@ export async function GET(req: Request, ctx: Ctx) {
         requestId: currentRequest.id,
         status: currentRequest.status,
         topic: currentRequest.topic,
-        platform: currentRequest.platform,
+        contentCategory: currentRequest.content_type,
         contentType: currentRequest.content_type,
+        platform: currentRequest.platform,
+        targetPage: currentRequest.target_page_name || "Connected Facebook Page",
+        targetPageName: currentRequest.target_page_name,
+        targetPageId: currentRequest.target_page_id,
         tone: currentRequest.tone,
+        targetAudience: currentRequest.audience,
         audience: currentRequest.audience,
         imageStyle: currentRequest.image_style,
         aspectRatio: currentRequest.aspect_ratio,
-        targetPageId: currentRequest.target_page_id,
-        targetPageName: currentRequest.target_page_name,
         postId: currentRequest.post_id,
         reviewUrl: currentRequest.review_url,
         errorMessage: currentRequest.error_message,
+        topicMandate:
+          "The 'topic' field is the authoritative, non-negotiable subject of this post. You MUST create the caption and image specifically about this topic. The 'contentCategory' and 'tone' are only stylistic angles—NEVER replace the topic with generic motivational quotes, sunrises, or unrelated advice.",
         constraints: {
           maxTitleLength: 120,
           maxDescriptionLength: 500,
           maxHashtags: 15,
           requireHostedImage: true,
           mustNotPublishAutomatically: true,
+          topicMustBePrimarySubject: true,
         },
         createdAt: currentRequest.created_at,
       });
@@ -550,6 +575,7 @@ const CreateChatGPTPostBody = z
     openaiFileIdRefs: z.array(z.any()).max(10).optional(),
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
     requestId: z.string().trim().min(1).max(64).optional(),
+    topic: z.string().trim().min(2).max(300).optional(),
   })
   .refine(
     (data) =>
@@ -959,9 +985,10 @@ export async function POST(req: Request, ctx: Ctx) {
       const executeCreation = async (): Promise<{ body: unknown; status: number }> => {
         const db = supabaseAdmin();
         const settings = await getSettings();
+        let linkedRequest: Awaited<ReturnType<typeof getContentRequestRecord>> = null;
 
         if (b.requestId) {
-          const linkedRequest = await getContentRequestRecord(b.requestId);
+          linkedRequest = await getContentRequestRecord(b.requestId);
           if (!linkedRequest) {
             return {
               status: 404,
@@ -993,6 +1020,7 @@ export async function POST(req: Request, ctx: Ctx) {
                   postId: existingPost.id,
                   requestId: linkedRequest.id,
                   status: existingPost.status === "draft" ? "pending_review" : existingPost.status,
+                  topic: existingPost.topic,
                   title: existingPost.title,
                   description: existingPost.description,
                   hashtags: existingPost.hashtags,
@@ -1088,8 +1116,9 @@ export async function POST(req: Request, ctx: Ctx) {
         }
 
         try {
+          const postTopic = linkedRequest?.topic || b.topic || (b.idempotencyKey ? `chatgpt:${b.idempotencyKey}` : (b.requestId ? `chatgpt:req:${b.requestId}` : "chatgpt"));
           const post = await createPostRecord({
-            topic: b.idempotencyKey ? `chatgpt:${b.idempotencyKey}` : (b.requestId ? `chatgpt:req:${b.requestId}` : "chatgpt"),
+            topic: postTopic,
             title: b.title,
             description: b.description,
             hashtags: b.hashtags,
@@ -1128,6 +1157,7 @@ export async function POST(req: Request, ctx: Ctx) {
               postId: post.id,
               requestId: b.requestId || undefined,
               status: "pending_review",
+              topic: post.topic,
               title: post.title,
               description: post.description,
               hashtags: post.hashtags,
