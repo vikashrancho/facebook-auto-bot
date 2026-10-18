@@ -97,6 +97,22 @@ import { POST as apiRoutePOST, GET as apiRouteGET } from "../src/app/api/[...pat
 
 let totalTests = 0;
 let passedTests = 0;
+const testCreatedPostIds: string[] = [];
+
+async function cleanupTestPosts() {
+  try {
+    const { supabaseAdmin } = await import("../src/lib/supabase/server");
+    const db = supabaseAdmin();
+    if (testCreatedPostIds.length > 0) {
+      await db.from("posts").delete().in("id", testCreatedPostIds);
+    }
+    await db.from("posts").delete().like("topic", "chatgpt:test_%");
+    await db.from("posts").delete().like("topic", "chatgpt:aligned_preview_test_%");
+    await db.from("posts").delete().like("topic", "chatgpt:unique_visual_preservation_%");
+  } catch {
+    // Non-fatal if DB cleanup fails during offline test runs
+  }
+}
 
 async function test(name: string, fn: () => void | Promise<void>) {
   totalTests++;
@@ -114,6 +130,7 @@ async function test(name: string, fn: () => void | Promise<void>) {
 }
 
 async function runTests() {
+  await cleanupTestPosts();
   console.log("\n=======================================================");
   console.log(" Running Safe Verification Test Suite (No Live Publishing)");
   console.log("=======================================================\n");
@@ -1653,6 +1670,7 @@ async function runTests() {
     const res = await apiRoutePOST(req, ctx);
     assert.strictEqual(res.status, 201);
     const body = await res.json();
+    if (body.postId) testCreatedPostIds.push(body.postId);
     assert.strictEqual(body.status, "pending_review");
     assert.strictEqual(body.approvalRequired, true);
     assert.ok(body.postId, "Must return postId");
@@ -2226,6 +2244,7 @@ async function runTests() {
     const res = await apiRoutePOST(req, ctx);
     assert.strictEqual(res.status, 201, "Expected HTTP 201 for post draft staging");
     const body = await res.json();
+    if (body.postId) testCreatedPostIds.push(body.postId);
     assert.strictEqual(body.status, "pending_review");
     assert.strictEqual(body.approvalRequired, true);
     assert.ok(body.postId, "Must return valid postId");
@@ -2389,6 +2408,7 @@ async function runTests() {
     const postRes = await apiRoutePOST(postReq, postCtx);
     assert.strictEqual(postRes.status, 201);
     const postBody = await postRes.json();
+    if (postBody.postId) testCreatedPostIds.push(postBody.postId);
 
     // Verify response imageUrl matches import imageUrl
     assert.strictEqual(postBody.imageUrl, hostedUrl, "Post response imageUrl must match imported hostedUrl");
@@ -2414,6 +2434,9 @@ async function runTests() {
     assert.strictEqual(pollinationsCallCount, 0, "Pollinations must never be invoked during import or staging");
   });
   globalThis.fetch = originalFetch;
+
+  // Cleanup any test posts created during execution so live database queue is clean
+  await cleanupTestPosts();
 
   console.log("\n=======================================================");
   console.log(` Test Results: ${passedTests}/${totalTests} Passed (100%)`);
