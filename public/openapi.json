@@ -59,8 +59,8 @@
     "/api/chatgpt/images": {
       "post": {
         "operationId": "importChatGPTImage",
-        "summary": "Import attached image or external image for Facebook post",
-        "description": "Imports an attached image via openaiFileIdRefs, an approved HTTPS imageUrl, or base64 bytes. Stores original bytes in Supabase Storage and returns a verified public HTTPS URL. Does not generate new images or substitute missing images.",
+        "summary": "Import ChatGPT-generated or attached image into application storage",
+        "description": "Imports an image already generated in the ChatGPT conversation (via DALL-E) or attached by the user. Accepts the file reference via openaiFileIdRefs, an approved HTTPS imageUrl, or base64 bytes. Downloads original image bytes and stores them permanently in Supabase Storage, returning a verified public HTTPS URL. Does NOT require any application-side image generation keys (OpenAI or Pexels). Does NOT generate new images or substitute missing images. This is the REQUIRED operation for the Custom GPT's normal post workflow after generating an image in chat.",
         "requestBody": {
           "required": true,
           "content": {
@@ -108,8 +108,8 @@
     "/api/chatgpt/images/generate": {
       "post": {
         "operationId": "generateChatGPTImage",
-        "summary": "Generate image from topic prompt when no image is supplied",
-        "description": "Generates an image from a topic prompt for Facebook posts when the user does not provide an image. Do not call this operation if the user has provided or attached an image.",
+        "summary": "Application-side image generation (uses app-configured AI provider)",
+        "description": "Generates an image on the application server using the application's configured backend provider (DALL-E 3 or Pexels). Requires application-side API keys configured in application settings. The Custom GPT's normal post workflow must NOT call this operation because ChatGPT generates images directly in the chat using its built-in Image Generation tool.",
         "requestBody": {
           "required": true,
           "content": {
@@ -167,8 +167,8 @@
     "/api/chatgpt/posts": {
       "post": {
         "operationId": "createChatGPTPost",
-        "summary": "Stage a generated post for user review",
-        "description": "Stages a Facebook post draft with content and hosted image URL. Pass the verified public URL from importChatGPTImage or generateChatGPTImage. Returns post ID and review URL. Does not publish to Facebook.",
+        "summary": "Stage an unpublished post draft for user review",
+        "description": "Stages an unpublished Facebook post draft with content and hosted image URL. Pass the verified public URL returned by importChatGPTImage. Returns post ID and dashboard review URL. Always creates an unpublished draft; does not publish or schedule to Facebook.",
         "requestBody": {
           "required": true,
           "content": {
