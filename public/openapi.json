@@ -1215,6 +1215,14 @@
           }
         }
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API Key",
+        "description": "Standard Bearer token or X-Integration-Key header"
+      }
     }
   }
 }

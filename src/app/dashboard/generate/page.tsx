@@ -201,7 +201,7 @@ export default function GeneratePage() {
   // Build the copyable handoff instructions for ChatGPT
   const handoffPrompt = useMemo(() => {
     if (!activeRequest) return "";
-    return `Process my queued content request ${activeRequest.id}. Retrieve the request using your configured Action. Create a compelling social media caption and generate the image using ChatGPT's built-in Image Generation capability. Import the exact generated image using importChatGPTImage and openaiFileIdRefs. Create an unpublished draft using the verified hosted image URL. Link the resulting draft back to the request and return the review URL. Do not use Pollinations.ai or another image generator. Do not approve or publish the post.`;
+    return `Process my queued content request ${activeRequest.id}. Retrieve the request details using your configured getChatGPTContentRequest Action with requestId "${activeRequest.id}". Create a compelling social media caption and generate the image using ChatGPT's built-in Image Generation capability. Import the exact generated image using importChatGPTImage with openaiFileIdRefs. Create an unpublished draft using createChatGPTPost with the verified hosted imageUrl and requestId "${activeRequest.id}". Return the review URL. Do not use Pollinations.ai or another image generator. Do not approve or publish the post.`;
   }, [activeRequest]);
 
   // Submit new content request

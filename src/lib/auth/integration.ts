@@ -27,12 +27,17 @@ export function validateIntegrationAuth(req: Request): boolean {
     return false;
   }
 
+  let providedKey = "";
   const authHeader = req.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return false;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    providedKey = authHeader.slice(7).trim();
+  } else {
+    const customHeader = req.headers.get("x-integration-key") || req.headers.get("x-api-key");
+    if (customHeader) {
+      providedKey = customHeader.trim();
+    }
   }
 
-  const providedKey = authHeader.slice(7).trim();
   if (!providedKey) {
     return false;
   }
