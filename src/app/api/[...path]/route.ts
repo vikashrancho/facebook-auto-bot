@@ -47,6 +47,16 @@ import {
   updateTopic,
 } from "@/lib/db/topics";
 import {
+  getContentRequestRecord,
+  listContentRequestRecords,
+  createContentRequestRecord,
+  markContentRequestProcessing,
+  markContentRequestDraftCreated,
+  markContentRequestFailed,
+  cancelContentRequestRecord,
+  ContentRequestsTableMissingError,
+} from "@/lib/db/content-requests";
+import {
   fetchAccount,
   fetchPages,
   missingPermissions,
@@ -124,12 +134,13 @@ async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
   return auth === `Bearer ${env.cronSecret}` || url.searchParams.get("secret") === env.cronSecret;
 }
 
-const INTEGRATION_ROUTES = new Set(["health", "chatgpt/posts", "chatgpt/images"]);
+const INTEGRATION_ROUTES = new Set(["health", "chatgpt/posts", "chatgpt/images", "chatgpt/requests"]);
 
 function isIntegrationRoute(route: string): boolean {
   if (INTEGRATION_ROUTES.has(route)) return true;
   if (route.startsWith("chatgpt/posts/")) return true;
   if (route.startsWith("chatgpt/images/")) return true;
+  if (route.startsWith("chatgpt/requests/")) return true;
   return false;
 }
 
@@ -185,6 +196,7 @@ async function publicSettings(settings: Awaited<ReturnType<typeof getSettings>>)
     facebook_connected: Boolean(facebook_user_token),
     facebook_page_ready: Boolean(default_page_token),
     facebook_configured: await isFacebookConfigured(),
+    chatgpt_custom_gpt_url: settings.chatgpt_custom_gpt_url || env.chatgptCustomGptUrlOptional || null,
   };
 }
 
@@ -335,6 +347,74 @@ export async function GET(req: Request, ctx: Ctx) {
       });
     }
 
+    if (route === "content-requests") {
+      const status = url.searchParams.get("status");
+      const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!, 10) : 50;
+      try {
+        const requests = await listContentRequestRecords({
+          status: status ? (status.split(",") as any) : undefined,
+          limit: isNaN(limit) ? 50 : limit,
+        });
+        return json({ ready: true, requests });
+      } catch (err) {
+        if (err instanceof ContentRequestsTableMissingError) {
+          return json({ ready: false, requests: [], message: err.message }, 409);
+        }
+        throw err;
+      }
+    }
+
+    if (path.length === 2 && path[0] === "content-requests") {
+      const request = await getContentRequestRecord(path[1]);
+      if (!request) return notFound();
+      return json({ request });
+    }
+
+    // chatgpt/requests/<id> — getChatGPTContentRequest action
+    if (path.length === 3 && path[0] === "chatgpt" && path[1] === "requests") {
+      const id = path[2];
+      const request = await getContentRequestRecord(id);
+      if (!request) {
+        return json({ error: `Content request '${id}' not found.` }, 404);
+      }
+      if (request.status === "cancelled") {
+        return json(
+          { error: "This content request has been cancelled by the user in the dashboard." },
+          409
+        );
+      }
+      let currentRequest = request;
+      if (request.status === "pending_chatgpt") {
+        const updated = await markContentRequestProcessing(id);
+        if (updated) currentRequest = updated;
+      }
+
+      return json({
+        requestId: currentRequest.id,
+        status: currentRequest.status,
+        topic: currentRequest.topic,
+        platform: currentRequest.platform,
+        contentType: currentRequest.content_type,
+        tone: currentRequest.tone,
+        audience: currentRequest.audience,
+        imageStyle: currentRequest.image_style,
+        aspectRatio: currentRequest.aspect_ratio,
+        targetPageId: currentRequest.target_page_id,
+        targetPageName: currentRequest.target_page_name,
+        postId: currentRequest.post_id,
+        reviewUrl: currentRequest.review_url,
+        errorMessage: currentRequest.error_message,
+        constraints: {
+          maxTitleLength: 120,
+          maxDescriptionLength: 500,
+          maxHashtags: 15,
+          requireHostedImage: true,
+          mustNotPublishAutomatically: true,
+        },
+        createdAt: currentRequest.created_at,
+      });
+    }
+
     return notFound();
   });
 }
@@ -421,6 +501,24 @@ const GenerateChatGPTImageBody = z.object({
   prompt: z.string().trim().min(2, "Prompt must be at least 2 characters.").max(500),
 });
 
+const CreateContentRequestBody = z.object({
+  topic: z
+    .string()
+    .trim()
+    .min(2, "Topic must be at least 2 characters.")
+    .max(500, "Topic cannot exceed 500 characters."),
+  platform: z.enum(["facebook", "instagram"]).default("facebook"),
+  contentType: z
+    .enum(["Motivational", "Educational", "Investing Tips", "Stock Market Analysis", "Custom"])
+    .default("Motivational"),
+  tone: z.string().trim().max(100).optional(),
+  audience: z.string().trim().max(100).optional(),
+  imageStyle: z.string().trim().max(100).optional(),
+  aspectRatio: z.enum(["1:1", "4:5", "16:9"]).default("1:1"),
+  targetPageId: z.string().optional(),
+  targetPageName: z.string().optional(),
+});
+
 const CreateChatGPTPostBody = z
   .object({
     title: z.string().trim().min(1, "title is required (1-120 characters).").max(120),
@@ -451,6 +549,7 @@ const CreateChatGPTPostBody = z
       .optional(),
     openaiFileIdRefs: z.array(z.any()).max(10).optional(),
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
+    requestId: z.string().trim().min(1).max(64).optional(),
   })
   .refine(
     (data) =>
@@ -547,6 +646,46 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ post: await publishPostNow(post.id) });
       }
       return json({ post });
+    }
+
+    if (route === "content-requests") {
+      const parsed = CreateContentRequestBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: parsed.error.issues[0]?.message ?? "Invalid content request." }, 400);
+      }
+      try {
+        const settings = await getSettings();
+        const pageId = parsed.data.targetPageId || settings.default_page_id || null;
+        const pageName = parsed.data.targetPageName || settings.default_page_name || null;
+        const record = await createContentRequestRecord({
+          topic: parsed.data.topic,
+          platform: parsed.data.platform,
+          contentType: parsed.data.contentType,
+          tone: parsed.data.tone,
+          audience: parsed.data.audience,
+          imageStyle: parsed.data.imageStyle,
+          aspectRatio: parsed.data.aspectRatio,
+          targetPageId: pageId,
+          targetPageName: pageName,
+        });
+        return json({ ok: true, request: record }, 201);
+      } catch (err) {
+        if (err instanceof ContentRequestsTableMissingError) {
+          return json({ error: err.message }, 409);
+        }
+        throw err;
+      }
+    }
+
+    // content-requests/<id>/cancel
+    if (path.length === 3 && path[0] === "content-requests" && path[2] === "cancel") {
+      const id = path[1];
+      try {
+        const updated = await cancelContentRequestRecord(id);
+        return json({ ok: true, request: updated });
+      } catch (err: any) {
+        return json({ error: err.message || "Failed to cancel content request." }, 400);
+      }
     }
 
     if (route === "topics") {
@@ -821,6 +960,54 @@ export async function POST(req: Request, ctx: Ctx) {
         const db = supabaseAdmin();
         const settings = await getSettings();
 
+        if (b.requestId) {
+          const linkedRequest = await getContentRequestRecord(b.requestId);
+          if (!linkedRequest) {
+            return {
+              status: 404,
+              body: { error: `Content request with ID '${b.requestId}' not found.` },
+            };
+          }
+          if (linkedRequest.status === "cancelled") {
+            return {
+              status: 409,
+              body: { error: "This content request has been cancelled by the user in the dashboard." },
+            };
+          }
+          if (linkedRequest.status === "draft_created" && linkedRequest.post_id) {
+            const existingPost = await getPost(linkedRequest.post_id);
+            if (existingPost) {
+              const contentHash = computePostContentHash({
+                postId: existingPost.id,
+                title: existingPost.title,
+                description: existingPost.description,
+                hashtags: existingPost.hashtags,
+                imageUrl: existingPost.image_url,
+                pageId: existingPost.page_id || settings.default_page_id || "",
+                linkUrl: existingPost.link_url,
+                utmSuffix: settings.utm_suffix,
+              });
+              return {
+                status: 200,
+                body: {
+                  postId: existingPost.id,
+                  requestId: linkedRequest.id,
+                  status: existingPost.status === "draft" ? "pending_review" : existingPost.status,
+                  title: existingPost.title,
+                  description: existingPost.description,
+                  hashtags: existingPost.hashtags,
+                  imageUrl: existingPost.image_url,
+                  pageName: existingPost.page_name,
+                  contentHash,
+                  reviewUrl: linkedRequest.review_url || `/dashboard/queue?post=${existingPost.id}`,
+                  approvalRequired: true,
+                  message: "Draft already created for this content request. Returned existing draft.",
+                },
+              };
+            }
+          }
+        }
+
         if (b.idempotencyKey) {
           const { data: existing } = await db
             .from("posts")
@@ -845,6 +1032,7 @@ export async function POST(req: Request, ctx: Ctx) {
               status: 200,
               body: {
                 postId: existing.id,
+                requestId: b.requestId || undefined,
                 status: existing.status === "draft" ? "pending_review" : existing.status,
                 title: existing.title,
                 description: existing.description,
@@ -901,7 +1089,7 @@ export async function POST(req: Request, ctx: Ctx) {
 
         try {
           const post = await createPostRecord({
-            topic: b.idempotencyKey ? `chatgpt:${b.idempotencyKey}` : "chatgpt",
+            topic: b.idempotencyKey ? `chatgpt:${b.idempotencyKey}` : (b.requestId ? `chatgpt:req:${b.requestId}` : "chatgpt"),
             title: b.title,
             description: b.description,
             hashtags: b.hashtags,
@@ -925,10 +1113,20 @@ export async function POST(req: Request, ctx: Ctx) {
             utmSuffix: settings.utm_suffix,
           });
 
+          const reviewUrl = `/dashboard/queue?post=${post.id}`;
+          if (b.requestId) {
+            try {
+              await markContentRequestDraftCreated(b.requestId, post.id, reviewUrl);
+            } catch (linkErr) {
+              console.error("Failed to link draft to content request:", linkErr);
+            }
+          }
+
           return {
             status: 201,
             body: {
               postId: post.id,
+              requestId: b.requestId || undefined,
               status: "pending_review",
               title: post.title,
               description: post.description,
@@ -936,7 +1134,7 @@ export async function POST(req: Request, ctx: Ctx) {
               imageUrl: post.image_url,
               pageName: post.page_name,
               contentHash,
-              reviewUrl: `/dashboard/queue?post=${post.id}`,
+              reviewUrl,
               approvalRequired: true,
               message:
                 "Post staged and awaiting explicit user review. Please display the complete image preview and caption to the user. " +
@@ -970,6 +1168,7 @@ export async function POST(req: Request, ctx: Ctx) {
                 status: 200,
                 body: {
                   postId: existingAfterConflict.id,
+                  requestId: b.requestId || undefined,
                   status:
                     existingAfterConflict.status === "draft"
                       ? "pending_review"
@@ -1004,6 +1203,29 @@ export async function POST(req: Request, ctx: Ctx) {
       } else {
         const res = await executeCreation();
         return json(res.body, res.status);
+      }
+    }
+
+    // chatgpt/requests/<id>/fail — failChatGPTContentRequest action
+    if (path.length === 4 && path[0] === "chatgpt" && path[1] === "requests" && path[3] === "fail") {
+      const requestId = path[2];
+      const parsed = z
+        .object({ error: z.string().trim().min(1).max(1000) })
+        .safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json({ error: "An error message is required (1-1000 characters)." }, 400);
+      }
+      try {
+        const updated = await markContentRequestFailed(requestId, parsed.data.error);
+        return json({
+          ok: true,
+          requestId: updated.id,
+          status: "failed",
+          errorMessage: updated.error_message,
+          message: "Content request marked failed.",
+        });
+      } catch (err: any) {
+        return json({ error: err.message || "Failed to mark content request failed." }, 400);
       }
     }
 
@@ -1261,6 +1483,7 @@ const SettingsBody = z.object({
   groq_enabled: z.boolean().optional(),
   openai_enabled: z.boolean().optional(),
   openrouter_enabled: z.boolean().optional(),
+  chatgpt_custom_gpt_url: z.string().trim().url().nullable().optional(),
 });
 
 const UpdateTopicBody = z.object({

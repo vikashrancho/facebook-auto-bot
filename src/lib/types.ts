@@ -58,6 +58,34 @@ export interface AppSettings {
   groq_enabled?: boolean;
   openai_enabled?: boolean;
   openrouter_enabled?: boolean;
+  chatgpt_custom_gpt_url?: string | null;
+  updated_at: string;
+}
+
+export type ContentRequestStatus =
+  | "pending_chatgpt"
+  | "processing"
+  | "draft_created"
+  | "failed"
+  | "cancelled";
+
+export interface ContentRequest {
+  id: string;
+  user_id: string;
+  platform: string;
+  target_page_id: string | null;
+  target_page_name: string | null;
+  topic: string;
+  content_type: string;
+  tone: string | null;
+  audience: string | null;
+  image_style: string | null;
+  aspect_ratio: string;
+  status: ContentRequestStatus;
+  post_id: string | null;
+  review_url: string | null;
+  error_message: string | null;
+  created_at: string;
   updated_at: string;
 }
 

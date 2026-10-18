@@ -457,6 +457,136 @@
           }
         }
       }
+    },
+    "/api/chatgpt/requests/{requestId}": {
+      "get": {
+        "operationId": "getChatGPTContentRequest",
+        "summary": "Retrieve queued content request from dashboard",
+        "description": "Retrieves the topic, platform, content preferences, and constraints for a queued content creation request submitted by the user from the dashboard. Automatically marks a pending request as processing. Does NOT call any external AI model or image generator. Does NOT approve or publish.",
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "description": "Unique UUID of the content request",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Content request retrieved successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContentRequestResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Content request not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Content request was cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chatgpt/requests/{requestId}/fail": {
+      "post": {
+        "operationId": "failChatGPTContentRequest",
+        "summary": "Report failure processing content request",
+        "description": "Reports that processing or image generation for this content request failed, safely recording the error in the dashboard. Use when image references are missing or DALL-E generation fails.",
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "description": "Unique UUID of the content request",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FailContentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Content request marked failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FailContentResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid error message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Content request not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -635,6 +765,11 @@
             "maxLength": 128,
             "description": "Unique client-generated key to prevent duplicate post creation on retries.",
             "example": "chatgpt_req_8f7b2c1e"
+          },
+          "requestId": {
+            "type": "string",
+            "description": "Optional UUID of the dashboard content request to link and mark complete upon staging.",
+            "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
           }
         }
       },
@@ -657,6 +792,12 @@
           "postId": {
             "type": "string",
             "format": "uuid",
+            "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of the linked dashboard content request, if provided.",
             "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
           },
           "status": {
@@ -934,6 +1075,134 @@
             "type": "string",
             "nullable": true
           }
+        }
+      },
+      "ContentRequestResponse": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "status",
+          "topic",
+          "platform",
+          "contentType",
+          "aspectRatio",
+          "constraints",
+          "createdAt"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending_chatgpt", "processing", "draft_created", "failed", "cancelled"],
+            "example": "processing"
+          },
+          "topic": {
+            "type": "string",
+            "example": "Long-term compound interest vs short-term speculation"
+          },
+          "platform": {
+            "type": "string",
+            "example": "facebook"
+          },
+          "contentType": {
+            "type": "string",
+            "example": "Investing Tips"
+          },
+          "tone": {
+            "type": "string",
+            "nullable": true,
+            "example": "Inspiring and analytical"
+          },
+          "audience": {
+            "type": "string",
+            "nullable": true,
+            "example": "Beginner retail investors"
+          },
+          "imageStyle": {
+            "type": "string",
+            "nullable": true,
+            "example": "Modern 3D financial illustration"
+          },
+          "aspectRatio": {
+            "type": "string",
+            "example": "1:1"
+          },
+          "targetPageId": {
+            "type": "string",
+            "nullable": true,
+            "example": "104928472918274"
+          },
+          "targetPageName": {
+            "type": "string",
+            "nullable": true,
+            "example": "Invest In Stock Market"
+          },
+          "postId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "example": null
+          },
+          "reviewUrl": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "constraints": {
+            "type": "object",
+            "required": [
+              "maxTitleLength",
+              "maxDescriptionLength",
+              "maxHashtags",
+              "requireHostedImage",
+              "mustNotPublishAutomatically"
+            ],
+            "properties": {
+              "maxTitleLength": { "type": "integer", "example": 120 },
+              "maxDescriptionLength": { "type": "integer", "example": 500 },
+              "maxHashtags": { "type": "integer", "example": 15 },
+              "requireHostedImage": { "type": "boolean", "example": true },
+              "mustNotPublishAutomatically": { "type": "boolean", "example": true }
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-18T16:00:00Z"
+          }
+        }
+      },
+      "FailContentRequest": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Safe explanation of why post generation or image import failed.",
+            "example": "ChatGPT was unable to generate an image adhering to content policies."
+          }
+        }
+      },
+      "FailContentResponse": {
+        "type": "object",
+        "required": ["ok", "requestId", "status", "message"],
+        "properties": {
+          "ok": { "type": "boolean", "example": true },
+          "requestId": { "type": "string", "format": "uuid", "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6" },
+          "status": { "type": "string", "example": "failed" },
+          "errorMessage": { "type": "string", "example": "Image generation failed." },
+          "message": { "type": "string", "example": "Content request marked failed." }
         }
       },
       "ErrorResponse": {

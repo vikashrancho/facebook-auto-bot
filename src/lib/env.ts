@@ -81,6 +81,9 @@ export const env = {
   get integrationApiKeyOptional() {
     return optional("INTEGRATION_API_KEY");
   },
+  get chatgptCustomGptUrlOptional() {
+    return optional("NEXT_PUBLIC_CHATGPT_CUSTOM_GPT_URL");
+  },
 
   /**
    * Origin this deployment is reachable at, used to build redirects back into

@@ -51,6 +51,7 @@ interface SettingsState {
   posting_hours: number[];
   timezone: string;
   topic_source?: "mine" | "trending" | "mixed";
+  chatgpt_custom_gpt_url?: string | null;
 }
 
 export default function SettingsPage() {
@@ -482,6 +483,31 @@ function SettingsForm() {
             placeholder="via mysite.com"
             className="mt-1 w-full rounded-xl border border-border bg-background px-3.5 py-2.5 text-sm outline-none focus:border-primary"
           />
+        </div>
+      </Card>
+
+      {/* ChatGPT Assistant Bridge */}
+      <Card>
+        <h2 className="font-heading font-bold text-foreground">Custom GPT Assistant (Vetechno FB Auto Post)</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">
+          Connect your Custom GPT with DALL-E image generation to create posts using your ChatGPT subscription, without requiring paid OpenAI or image API keys.
+        </p>
+
+        <div className="mt-4">
+          <label className="text-xs font-semibold text-muted-foreground">
+            Custom GPT URL (e.g. https://chatgpt.com/g/g-675034...-vetechno-fb-auto-post)
+          </label>
+          <input
+            type="url"
+            value={settings.chatgpt_custom_gpt_url ?? ""}
+            onChange={(e) => setSettings({ ...settings, chatgpt_custom_gpt_url: e.target.value || null })}
+            onBlur={(e) => save({ chatgpt_custom_gpt_url: e.target.value.trim() || null })}
+            placeholder="https://chatgpt.com/g/g-..."
+            className="mt-1 w-full rounded-xl border border-border bg-background px-3.5 py-2.5 text-sm outline-none focus:border-primary"
+          />
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            When configured, the &ldquo;Open Custom GPT&rdquo; button in the Generate dashboard will launch this assistant directly.
+          </p>
         </div>
       </Card>
 
