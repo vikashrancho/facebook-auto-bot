@@ -808,6 +808,17 @@
             "enum": ["draft", "scheduled", "publishing", "posted", "failed"],
             "example": "posted"
           },
+          "title": {
+            "type": "string",
+            "description": "Title/hook of the post.",
+            "example": "5 Morning Habits That Double Your Focus"
+          },
+          "imageUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "The exact permanent Supabase Storage URL hosting the published image. Use this URL for post-publication display.",
+            "example": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.jpg"
+          },
           "facebookPostId": {
             "type": "string",
             "description": "Meta Graph API post ID (PageID_PostID) for real publications.",

@@ -1105,6 +1105,8 @@ export async function POST(req: Request, ctx: Ctx) {
           success: true,
           postId: post.id,
           status: "posted",
+          title: post.title,
+          imageUrl: post.image_url,
           facebookPostId: post.facebook_post_id,
           facebookPostUrl: post.facebook_post_id ? facebookPostUrl(post.facebook_post_id) : null,
           postedAt: post.posted_at,
@@ -1191,6 +1193,8 @@ export async function POST(req: Request, ctx: Ctx) {
           success: true,
           postId: published.id,
           status: "posted",
+          title: published.title,
+          imageUrl: published.image_url,
           facebookPostId: published.facebook_post_id,
           facebookPostUrl: published.facebook_post_id
             ? facebookPostUrl(published.facebook_post_id)
