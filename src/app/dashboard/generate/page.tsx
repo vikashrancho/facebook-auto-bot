@@ -201,13 +201,14 @@ export default function GeneratePage() {
   // Build the copyable handoff instructions for ChatGPT
   const handoffPrompt = useMemo(() => {
     if (!activeRequest) return "";
+    const targetPageParam = activeRequest.target_page_id ? `, pageId "${activeRequest.target_page_id}"` : "";
     return `Process my queued content request ${activeRequest.id}.
 
 1. Retrieve the authoritative request using getChatGPTContentRequest with requestId "${activeRequest.id}".
 2. AUTHORITATIVE TOPIC: "${activeRequest.topic}". The topic is the absolute primary subject of the post. The content category ("${activeRequest.content_type || "General"}") and tone ("${activeRequest.tone || "Inspiring"}") are only stylistic guides—NEVER replace the topic with generic motivation, morning sunrises, or unrelated advice.
 3. Formulate a concrete visual concept that clearly depicts "${activeRequest.topic}". Generate the image using ChatGPT's built-in Image Generation capability.
 4. Import the exact generated image using importChatGPTImage with openaiFileIdRefs.
-5. Create an unpublished draft using createChatGPTPost with title, description, hashtags, the verified hosted imageUrl, topic "${activeRequest.topic}", and requestId "${activeRequest.id}".
+5. Create an unpublished draft using createChatGPTPost with title, description, hashtags, the verified hosted imageUrl, topic "${activeRequest.topic}", requestId "${activeRequest.id}"${targetPageParam}.
 6. Return the post review URL. Do not use Pollinations.ai or another image generator. Do not approve or publish the post.`;
   }, [activeRequest]);
 
@@ -216,6 +217,13 @@ export default function GeneratePage() {
     e.preventDefault();
     if (topic.trim().length < 2) {
       setError("Please enter a topic or concept (at least 2 characters).");
+      return;
+    }
+
+    // Require target page selection if pages are configured
+    const effectivePageId = pageId || pages.find((p) => p.is_default)?.page_id;
+    if (pages.length > 0 && !effectivePageId) {
+      setError("Please select a target Facebook Page for this content request.");
       return;
     }
 
@@ -234,8 +242,8 @@ export default function GeneratePage() {
           audience: audience || undefined,
           imageStyle: imageStyle || undefined,
           aspectRatio,
-          targetPageId: pageId || undefined,
-          targetPageName: selectedPage?.name || undefined,
+          targetPageId: effectivePageId || undefined,
+          targetPageName: pages.find((p) => p.page_id === effectivePageId)?.name || selectedPage?.name || undefined,
         }),
       });
 
@@ -611,7 +619,7 @@ export default function GeneratePage() {
                 </button>
               </div>
 
-              {pages.length > 0 && (
+              {pages.length > 0 ? (
                 <div className="mt-3">
                   <label className="text-xs font-medium text-muted-foreground">Target Facebook Page</label>
                   <select
@@ -619,12 +627,20 @@ export default function GeneratePage() {
                     onChange={(e) => setPageId(e.target.value)}
                     className="mt-1 w-full rounded-xl border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-primary"
                   >
+                    {!pageId && <option value="">-- Select a Facebook Page --</option>}
                     {pages.map((p) => (
                       <option key={p.page_id} value={p.page_id}>
-                        {p.name}
+                        {p.name} {p.is_default ? "★ (Default)" : ""}
                       </option>
                     ))}
                   </select>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-lg border border-border/80 bg-background/50 p-2 text-xs text-muted-foreground">
+                  No Facebook Pages connected.{" "}
+                  <Link href="/dashboard/pages" className="text-primary underline">
+                    Connect a Page
+                  </Link>
                 </div>
               )}
             </div>

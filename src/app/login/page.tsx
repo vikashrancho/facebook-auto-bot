@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Logo } from "@/components/logo";
 
@@ -51,7 +52,9 @@ function LoginForm() {
 
       <div className="relative w-full max-w-sm">
         <div className="mb-8 flex justify-center">
-          <Logo />
+          <Link href="/" title="Back to Homepage" className="focus:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-lg">
+            <Logo />
+          </Link>
         </div>
 
         <form
@@ -91,6 +94,15 @@ function LoginForm() {
             {loading ? "Signing in…" : "Sign in"}
           </button>
         </form>
+
+        <p className="mt-4 text-center">
+          <Link
+            href="/"
+            className="text-xs text-muted-foreground hover:text-foreground transition inline-flex items-center gap-1"
+          >
+            ← Back to public website
+          </Link>
+        </p>
       </div>
     </div>
   );

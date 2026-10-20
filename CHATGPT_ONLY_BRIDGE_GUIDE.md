@@ -112,8 +112,8 @@ Authorization: Bearer <INTEGRATION_API_KEY>
   "audience": "Long-term wealth builders",
   "imageStyle": "Modern Photorealistic",
   "aspectRatio": "1:1",
-  "targetPageId": "104928472918274",
-  "targetPageName": "Invest In Stock Market",
+  "targetPageId": "100000000000001",
+  "targetPageName": "Acme Media Studio",
   "constraints": {
     "maxTitleLength": 120,
     "maxDescriptionLength": 500,

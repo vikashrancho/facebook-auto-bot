@@ -587,6 +587,35 @@
           }
         }
       }
+    },
+    "/api/chatgpt/connected-pages": {
+      "get": {
+        "operationId": "getConnectedFacebookPages",
+        "summary": "Retrieve authorized Facebook Pages for destination selection",
+        "description": "Returns all connected Facebook Pages accessible for posting, including page IDs, names, profile images, and default indicators. Use this to select or ask the user which Page to post to when no destination Page was specified.",
+        "responses": {
+          "200": {
+            "description": "List of connected and authorized Facebook Pages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectedPagesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -598,6 +627,57 @@
       }
     },
     "schemas": {
+      "ConnectedPagesResponse": {
+        "type": "object",
+        "required": ["pages"],
+        "properties": {
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["pageId", "name", "isDefault", "canPublish"],
+              "properties": {
+                "pageId": {
+                  "type": "string",
+                  "example": "100000000000001"
+                },
+                "name": {
+                  "type": "string",
+                  "example": "Acme Media Studio"
+                },
+                "category": {
+                  "type": "string",
+                  "nullable": true,
+                  "example": "Digital creator"
+                },
+                "pictureUrl": {
+                  "type": "string",
+                  "format": "uri",
+                  "nullable": true
+                },
+                "isDefault": {
+                  "type": "boolean",
+                  "example": true
+                },
+                "canPublish": {
+                  "type": "boolean",
+                  "example": true
+                }
+              }
+            }
+          },
+          "defaultPageId": {
+            "type": "string",
+            "nullable": true,
+            "example": "100000000000001"
+          },
+          "defaultPageName": {
+            "type": "string",
+            "nullable": true,
+            "example": "Acme Media Studio"
+          }
+        }
+      },
       "HealthResponse": {
         "type": "object",
         "required": ["status", "database", "facebookPageConfigured"],
@@ -775,6 +855,16 @@
             "type": "string",
             "description": "Authoritative topic of the post. Preserves the exact user topic.",
             "example": "Why index funds and dollar-cost averaging beat emotional trading over 20 years"
+          },
+          "pageId": {
+            "type": "string",
+            "description": "Optional destination Facebook Page ID. If omitted, uses targetPageId from linked request or default Page.",
+            "example": "100000000000001"
+          },
+          "targetPageId": {
+            "type": "string",
+            "description": "Alias for pageId.",
+            "example": "100000000000001"
           }
         }
       },
@@ -1132,7 +1222,7 @@
           "targetPage": {
             "type": "string",
             "description": "Name of target Facebook page.",
-            "example": "Invest In Stock Market"
+            "example": "Acme Media Studio"
           },
           "tone": {
             "type": "string",
@@ -1167,12 +1257,12 @@
           "targetPageId": {
             "type": "string",
             "nullable": true,
-            "example": "104928472918274"
+            "example": "100000000000001"
           },
           "targetPageName": {
             "type": "string",
             "nullable": true,
-            "example": "Invest In Stock Market"
+            "example": "Acme Media Studio"
           },
           "postId": {
             "type": "string",

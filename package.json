@@ -6,9 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "test": "tsx scripts/test-integration.ts",
-    "test:bridge": "tsx scripts/test-chatgpt-bridge.ts"
+    "test": "npx tsx scripts/test-public-security.ts && npx tsx scripts/test-integration.ts && npx tsx scripts/test-calendar-scheduler.ts && npx tsx scripts/test-facebook-lifecycle.ts && npx tsx scripts/test-multi-page.ts",
+    "test:security": "npx tsx scripts/test-public-security.ts",
+    "test:integration": "npx tsx scripts/test-integration.ts",
+    "test:calendar": "npx tsx scripts/test-calendar-scheduler.ts",
+    "test:facebook": "npx tsx scripts/test-facebook-lifecycle.ts",
+    "test:bridge": "npx tsx scripts/test-chatgpt-bridge.ts",
+    "test:multipage": "npx tsx scripts/test-multi-page.ts"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

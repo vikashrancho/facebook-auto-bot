@@ -9,6 +9,7 @@ import {
 } from "@/lib/auth/session";
 import {
   validateIntegrationAuth,
+  timingSafeEqualString,
   computePostContentHash,
   createApprovalToken,
   verifyApprovalToken,
@@ -17,6 +18,12 @@ import {
   releaseUnpublishedApprovalToken,
   StoragePersistenceError,
 } from "@/lib/auth/integration";
+import {
+  checkRateLimit,
+  RATE_LIMIT_TIERS,
+  rateLimitExceededResponse,
+  getClientIp,
+} from "@/lib/rate-limit";
 import { generateContent, DEFAULT_SYSTEM_PROMPT } from "@/lib/ai/text";
 import {
   generateImage,
@@ -32,8 +39,11 @@ import {
   getPost,
   listDuePosts,
   listPosts,
+  listCalendarPosts,
   updatePostRecord,
 } from "@/lib/db/posts";
+import { processDueScheduledPosts } from "@/lib/scheduler";
+import { localParts, DEFAULT_TIMEZONE } from "@/lib/time";
 import { getSettings, updateSettings } from "@/lib/db/settings";
 import { listTemplates, saveTemplate, deleteTemplate } from "@/lib/db/templates";
 import { TEMPLATE_PRESETS } from "@/lib/templates/presets";
@@ -57,9 +67,20 @@ import {
   ContentRequestsTableMissingError,
 } from "@/lib/db/content-requests";
 import {
+  listPages,
+  getPageWithToken,
+  upsertPages,
+  disconnectPage,
+  reconnectPage,
+  setDefaultPage,
+  disconnectAllPages,
+} from "@/lib/db/pages";
+import {
   fetchAccount,
   fetchPages,
+  fetchSinglePage,
   missingPermissions,
+  revokeFacebookAccess,
   FacebookNotConnectedError,
 } from "@/lib/facebook/client";
 import {
@@ -131,27 +152,63 @@ async function hasSession(req: Request): Promise<boolean> {
 async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
   if (!env.cronSecret) return hasSession(req);
   const auth = req.headers.get("authorization");
-  return auth === `Bearer ${env.cronSecret}` || url.searchParams.get("secret") === env.cronSecret;
+  if (auth && auth.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    return timingSafeEqualString(token, env.cronSecret);
+  }
+  const secretParam = url.searchParams.get("secret");
+  if (secretParam) {
+    return timingSafeEqualString(secretParam.trim(), env.cronSecret);
+  }
+  return false;
 }
 
-const INTEGRATION_ROUTES = new Set(["health", "chatgpt/posts", "chatgpt/images", "chatgpt/requests"]);
+const INTEGRATION_ROUTES = new Set([
+  "health",
+  "chatgpt/posts",
+  "chatgpt/images",
+  "chatgpt/requests",
+  "chatgpt/connected-pages",
+  "chatgpt/pages",
+]);
 
 function isIntegrationRoute(route: string): boolean {
   if (INTEGRATION_ROUTES.has(route)) return true;
   if (route.startsWith("chatgpt/posts/")) return true;
   if (route.startsWith("chatgpt/images/")) return true;
   if (route.startsWith("chatgpt/requests/")) return true;
+  if (route.startsWith("chatgpt/connected-pages")) return true;
+  if (route.startsWith("chatgpt/pages")) return true;
   return false;
 }
 
 async function guard(route: string, req: Request, url: URL): Promise<Response | null> {
+  // Rate limiting tier enforcement based on endpoint and client IP
+  const ip = getClientIp(req);
+  if (route === "auth/login") {
+    const rl = checkRateLimit(`login:${ip}`, RATE_LIMIT_TIERS.AUTH_LOGIN);
+    if (!rl.allowed) return rateLimitExceededResponse(rl);
+  } else if (isIntegrationRoute(route)) {
+    const rl = checkRateLimit(`chatgpt:${ip}`, RATE_LIMIT_TIERS.CHATGPT_ACTIONS);
+    if (!rl.allowed) return rateLimitExceededResponse(rl);
+  } else if (route.startsWith("generate/")) {
+    const rl = checkRateLimit(`gen:${ip}`, RATE_LIMIT_TIERS.GENERATION);
+    if (!rl.allowed) return rateLimitExceededResponse(rl);
+  } else if (route.startsWith("cron/")) {
+    const rl = checkRateLimit(`cron:${ip}`, RATE_LIMIT_TIERS.CRON_SCHEDULER);
+    if (!rl.allowed) return rateLimitExceededResponse(rl);
+  } else if (!OPEN_ROUTES.has(route)) {
+    const rl = checkRateLimit(`api:${ip}`, RATE_LIMIT_TIERS.STANDARD_API);
+    if (!rl.allowed) return rateLimitExceededResponse(rl);
+  }
+
   if (OPEN_ROUTES.has(route)) return null;
   // ChatGPT / M2M integration routes strictly require Bearer INTEGRATION_API_KEY.
   // The dashboard session cookie is deliberately rejected here to avoid cross-context confusion.
   if (isIntegrationRoute(route)) {
     return validateIntegrationAuth(req) ? null : unauthorized();
   }
-  if (route === "cron/process-queue") {
+  if (route === "cron/process-queue" || route === "cron/scheduler") {
     return (await cronAuthorized(req, url)) ? null : unauthorized();
   }
   return (await hasSession(req)) ? null : unauthorized();
@@ -161,8 +218,15 @@ async function safely(handler: () => Promise<Response>): Promise<Response> {
   try {
     return await handler();
   } catch (err) {
-    console.error(err);
-    return json({ error: err instanceof Error ? err.message : "Unexpected server error." }, 500);
+    const requestId = crypto.randomUUID();
+    console.error(`[INTERNAL_ERROR:${requestId}]`, err);
+    const isProd = process.env.NODE_ENV === "production";
+    const errorMsg = isProd
+      ? "An unexpected internal server error occurred."
+      : err instanceof Error
+      ? err.message
+      : "Unexpected server error.";
+    return json({ error: errorMsg, requestId }, 500);
   }
 }
 
@@ -231,6 +295,25 @@ export async function GET(req: Request, ctx: Ctx) {
       return getPages(url.searchParams.get("refresh") === "1");
     }
 
+    if (route === "chatgpt/connected-pages" || route === "chatgpt/pages") {
+      const pages = await listPages({ includeInactive: false });
+      const currentSettings = await getSettings();
+      return json({
+        pages: pages.map((p) => ({
+          id: p.page_id,
+          pageId: p.page_id,
+          name: p.name,
+          category: p.category,
+          pictureUrl: p.picture_url ?? null,
+          isDefault: Boolean(p.is_default),
+          canPublish: Boolean(p.can_post),
+        })),
+        count: pages.length,
+        defaultPageId: currentSettings.default_page_id,
+        defaultPageName: currentSettings.default_page_name,
+      });
+    }
+
     if (route === "topics") {
       const settings = await getSettings();
       const source = settings.topic_source ?? "mine";
@@ -278,7 +361,69 @@ export async function GET(req: Request, ctx: Ctx) {
       return oauthCallback(req, url);
     }
 
-    if (route === "cron/process-queue") {
+    if (route === "calendar") {
+      const start = url.searchParams.get("start");
+      const end = url.searchParams.get("end");
+      const settings = await getSettings();
+      const timeZone = settings.timezone || DEFAULT_TIMEZONE;
+
+      const posts = await listCalendarPosts({
+        startDate: start ?? undefined,
+        endDate: end ?? undefined,
+      });
+
+      const allPosts = await listPosts();
+      const now = new Date();
+      const todayKey = localParts(now, timeZone).dateKey;
+
+      const dayOfWeek = now.getDay();
+      const startOfWeek = new Date(now.getTime() - dayOfWeek * 86400000);
+      const endOfWeek = new Date(startOfWeek.getTime() + 6 * 86400000);
+      const startOfWeekKey = localParts(startOfWeek, timeZone).dateKey;
+      const endOfWeekKey = localParts(endOfWeek, timeZone).dateKey;
+
+      let scheduledToday = 0;
+      let scheduledThisWeek = 0;
+      let awaitingApproval = 0;
+      let published = 0;
+      let failedOrAttention = 0;
+
+      for (const p of allPosts) {
+        if (p.status === "posted") {
+          published++;
+        }
+        if (p.status === "failed" || Boolean(p.error_message)) {
+          failedOrAttention++;
+        }
+        if (!p.approved_by_user && p.status !== "posted") {
+          awaitingApproval++;
+        }
+        if (p.scheduled_at) {
+          const postDateKey = localParts(new Date(p.scheduled_at), timeZone).dateKey;
+          if (postDateKey === todayKey) {
+            scheduledToday++;
+          }
+          if (postDateKey >= startOfWeekKey && postDateKey <= endOfWeekKey) {
+            scheduledThisWeek++;
+          }
+        }
+      }
+
+      return json({
+        posts,
+        allPosts,
+        summary: {
+          scheduledToday,
+          scheduledThisWeek,
+          awaitingApproval,
+          published,
+          failedOrAttention,
+        },
+        timeZone,
+      });
+    }
+
+    if (route === "cron/process-queue" || route === "cron/scheduler") {
       return runCron(req, url);
     }
 
@@ -576,6 +721,8 @@ const CreateChatGPTPostBody = z
     idempotencyKey: z.string().trim().min(1).max(128).optional(),
     requestId: z.string().trim().min(1).max(64).optional(),
     topic: z.string().trim().min(2).max(300).optional(),
+    pageId: z.string().trim().min(1).max(100).optional(),
+    targetPageId: z.string().trim().min(1).max(100).optional(),
   })
   .refine(
     (data) =>
@@ -614,7 +761,7 @@ export async function POST(req: Request, ctx: Ctx) {
 
     if (route === "auth/login") {
       const parsed = LoginBody.safeParse(await req.json().catch(() => null));
-      if (!parsed.success || parsed.data.password !== env.adminPassword) {
+      if (!parsed.success || !timingSafeEqualString(parsed.data.password, env.adminPassword)) {
         return json({ error: "Incorrect password." }, 401);
       }
       const res = json({ ok: true });
@@ -654,6 +801,14 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ error: "scheduledAt is required to schedule a post." }, 400);
       }
 
+      const settings = await getSettings();
+      const pageId = b.pageId || settings.default_page_id || null;
+      let pageName = b.pageName || null;
+      if (pageId && !pageName) {
+        const pRecord = await getPageWithToken(pageId);
+        pageName = pRecord?.name || (pageId === settings.default_page_id ? settings.default_page_name : null) || "Facebook Page";
+      }
+
       const post = await createPostRecord({
         topic: b.topic,
         title: b.title,
@@ -662,8 +817,8 @@ export async function POST(req: Request, ctx: Ctx) {
         image_url: b.imageUrl,
         image_source: b.imageSource,
         link_url: b.linkUrl || null,
-        page_id: b.pageId,
-        page_name: b.pageName,
+        page_id: pageId,
+        page_name: pageName,
         scheduled_at: b.action === "schedule" ? b.scheduledAt! : null,
         status: b.action === "schedule" ? "scheduled" : "draft",
       });
@@ -682,7 +837,12 @@ export async function POST(req: Request, ctx: Ctx) {
       try {
         const settings = await getSettings();
         const pageId = parsed.data.targetPageId || settings.default_page_id || null;
-        const pageName = parsed.data.targetPageName || settings.default_page_name || null;
+        let pageName = parsed.data.targetPageName || null;
+        if (pageId && !pageName) {
+          const pRecord = await getPageWithToken(pageId);
+          pageName = pRecord?.name || (pageId === settings.default_page_id ? settings.default_page_name : null) || null;
+        }
+
         const record = await createContentRequestRecord({
           topic: parsed.data.topic,
           platform: parsed.data.platform,
@@ -776,25 +936,98 @@ export async function POST(req: Request, ctx: Ctx) {
       });
     }
 
+    // posts/<id>/schedule — schedule or reschedule a post
+    if (path.length === 3 && path[0] === "posts" && path[2] === "schedule") {
+      const id = path[1];
+      const post = await getPost(id);
+      if (!post) return notFound();
+      if (post.status === "posted") {
+        return json({ error: "Cannot schedule an already-published post." }, 400);
+      }
+      if (post.status === "publishing") {
+        return json({ error: "Cannot schedule a post that is currently in-flight to Facebook." }, 409);
+      }
+
+      const body = await req.json().catch(() => null);
+      const ScheduleBody = z.object({
+        scheduledAt: z.string().datetime(),
+        scheduleNotes: z.string().max(500).optional(),
+        allowPast: z.boolean().optional(),
+      });
+
+      const parsed = ScheduleBody.safeParse(body);
+      if (!parsed.success) {
+        return json({ error: "A valid ISO datetime (scheduledAt) is required." }, 400);
+      }
+
+      const targetTime = new Date(parsed.data.scheduledAt).getTime();
+      if (!parsed.data.allowPast && targetTime <= Date.now()) {
+        return json({ error: "Cannot schedule a post for an invalid or past time." }, 400);
+      }
+
+      if (!post.image_url || post.image_url.trim() === "") {
+        return json({ error: "Post has no valid image URL. An image is required before scheduling." }, 422);
+      }
+
+      const settings = await getSettings();
+      const pageId = post.page_id ?? settings.default_page_id;
+      if (!pageId) {
+        return json({ error: "Target Facebook Page is not configured in settings." }, 422);
+      }
+
+      const updated = await updatePostRecord(post.id, {
+        scheduled_at: parsed.data.scheduledAt,
+        status: "scheduled",
+        schedule_notes: parsed.data.scheduleNotes ?? post.schedule_notes ?? null,
+        error_message: null,
+      });
+
+      return json({ ok: true, post: updated });
+    }
+
+    // posts/<id>/cancel-schedule — revert scheduled post to draft
+    if (path.length === 3 && path[0] === "posts" && path[2] === "cancel-schedule") {
+      const id = path[1];
+      const post = await getPost(id);
+      if (!post) return notFound();
+      if (post.status === "posted") {
+        return json({ error: "Cannot cancel schedule of an already-published post." }, 400);
+      }
+      if (post.status === "publishing") {
+        return json({ error: "Cannot cancel schedule while publishing is in progress." }, 409);
+      }
+
+      const updated = await updatePostRecord(post.id, {
+        scheduled_at: null,
+        status: "draft",
+      });
+
+      return json({ ok: true, post: updated });
+    }
+
+    if (route === "cron/process-queue" || route === "cron/scheduler") {
+      return runCron(req, url);
+    }
+
     if (route === "facebook/default-page") {
       const parsed = DefaultPageBody.safeParse(await req.json().catch(() => null));
       if (!parsed.success) return json({ error: "pageId is required." }, 400);
 
-      // The Page token is fetched fresh rather than taken from the client, so
-      // a token never has to travel to the browser and back.
       try {
-        const page = (await fetchPages()).find((p) => p.id === parsed.data.pageId);
-        if (!page) return json({ error: "That Page is not available on this account." }, 404);
-
-        await updateSettings({
-          default_page_id: page.id,
-          default_page_name: page.name,
-          default_page_token: page.access_token,
-        });
-        return json({ ok: true, pageName: page.name });
-      } catch (err) {
-        if (err instanceof FacebookNotConnectedError) return json({ error: err.message }, 409);
-        throw err;
+        const result = await setDefaultPage(parsed.data.pageId);
+        return json({ ok: true, success: true, defaultPageId: parsed.data.pageId, pageName: result.pageName });
+      } catch (err: any) {
+        // If not in cache, fallback to fetching from Facebook
+        try {
+          const page = (await fetchPages()).find((p) => p.id === parsed.data.pageId);
+          if (!page) return json({ error: "That Page is not available on this account." }, 404);
+          await upsertPages([page]);
+          const result = await setDefaultPage(page.id);
+          return json({ ok: true, success: true, defaultPageId: page.id, pageName: result.pageName });
+        } catch (fetchErr) {
+          if (fetchErr instanceof FacebookNotConnectedError) return json({ error: fetchErr.message }, 409);
+          return json({ error: err.message || "Failed to set default Page." }, 400);
+        }
       }
     }
 
@@ -1078,15 +1311,38 @@ export async function POST(req: Request, ctx: Ctx) {
           }
         }
 
-        if (!settings.default_page_id || !settings.default_page_token) {
+        // Resolve destination Facebook Page:
+        // Priority 1: explicitly passed pageId or targetPageId
+        // Priority 2: target_page_id from linked content request
+        // Priority 3: configured default_page_id
+        const destinationPageId =
+          b.pageId || b.targetPageId || linkedRequest?.target_page_id || settings.default_page_id;
+
+        if (!destinationPageId) {
           return {
             status: 409,
             body: {
               error:
-                "No Facebook Page is currently configured in the application. Please select a default Page in Settings first.",
+                "No destination Facebook Page was specified and no default Page is configured. Please pass 'pageId' or configure a default Page in Settings.",
             },
           };
         }
+
+        const targetPage = await getPageWithToken(destinationPageId);
+        if (!targetPage || targetPage.is_active === false) {
+          return {
+            status: 409,
+            body: {
+              error: `Destination Facebook Page with ID '${destinationPageId}' is not connected, inactive, or unauthorized. Call getConnectedFacebookPages to see available Pages.`,
+            },
+          };
+        }
+
+        const destinationPageName =
+          targetPage.name ||
+          linkedRequest?.target_page_name ||
+          (destinationPageId === settings.default_page_id ? settings.default_page_name : null) ||
+          "Facebook Page";
 
         let ingested: { url: string; source: ImageSource; sha256?: string };
         try {
@@ -1125,8 +1381,8 @@ export async function POST(req: Request, ctx: Ctx) {
             image_url: ingested.url,
             image_source: ingested.source,
             link_url: null,
-            page_id: settings.default_page_id,
-            page_name: settings.default_page_name,
+            page_id: targetPage.page_id,
+            page_name: destinationPageName,
             scheduled_at: null,
             status: "draft",
           });
@@ -1137,7 +1393,7 @@ export async function POST(req: Request, ctx: Ctx) {
             description: post.description,
             hashtags: post.hashtags,
             imageUrl: post.image_url,
-            pageId: settings.default_page_id,
+            pageId: targetPage.page_id,
             linkUrl: post.link_url,
             utmSuffix: settings.utm_suffix,
           });
@@ -1162,6 +1418,7 @@ export async function POST(req: Request, ctx: Ctx) {
               description: post.description,
               hashtags: post.hashtags,
               imageUrl: post.image_url,
+              pageId: post.page_id,
               pageName: post.page_name,
               contentHash,
               reviewUrl,
@@ -1382,9 +1639,21 @@ export async function POST(req: Request, ctx: Ctx) {
       }
 
       const settings = await getSettings();
-      const pageId = post.page_id ?? settings.default_page_id;
-      if (!pageId || !settings.default_page_token) {
-        return json({ error: "Default Facebook Page is not configured or token is missing." }, 409);
+      const pageId = post.page_id || settings.default_page_id;
+      const targetPage = pageId ? await getPageWithToken(pageId) : null;
+      const pageToken =
+        targetPage?.access_token ||
+        (pageId === settings.default_page_id ? settings.default_page_token : null);
+
+      if (!pageId || !pageToken || (targetPage && targetPage.is_active === false)) {
+        return json(
+          {
+            error: `Destination Facebook Page (${post.page_name || pageId || "unknown"}) is ${
+              targetPage?.is_active === false ? "disconnected or inactive" : "not configured or token is missing"
+            }.`,
+          },
+          409
+        );
       }
 
       // Cryptographically verify and conditionally consume the approval token against current post content
@@ -1477,6 +1746,10 @@ export async function POST(req: Request, ctx: Ctx) {
     }
 
     if (route === "facebook/disconnect") {
+      const current = await getSettings().catch(() => null);
+      if (current?.facebook_user_token) {
+        await revokeFacebookAccess(current.facebook_user_token).catch(() => null);
+      }
       await updateSettings({
         facebook_user_token: null,
         facebook_token_expires_at: null,
@@ -1485,8 +1758,47 @@ export async function POST(req: Request, ctx: Ctx) {
         default_page_name: null,
         default_page_token: null,
       });
-      await supabaseAdmin().from("pages_cache").delete().neq("page_id", "");
-      return json({ ok: true });
+      await disconnectAllPages();
+      return json({ ok: true, disconnected: true });
+    }
+
+    // facebook/pages/<id>/disconnect — disconnect individual Page without disconnecting account
+    if (path.length === 4 && path[0] === "facebook" && path[1] === "pages" && path[3] === "disconnect") {
+      const pageId = path[2];
+      const result = await disconnectPage(pageId);
+      return json({ ok: true, pageId, wasDefault: result.wasDefault });
+    }
+
+    // facebook/pages/<id>/reconnect — reactivate individual Page
+    if (path.length === 4 && path[0] === "facebook" && path[1] === "pages" && path[3] === "reconnect") {
+      const pageId = path[2];
+      const ok = await reconnectPage(pageId);
+      return json({ ok, pageId });
+    }
+
+    // facebook/pages/add — directly link/sync a specific Page by ID
+    if (route === "facebook/pages/add") {
+      const body = await req.json().catch(() => ({}));
+      const pageId = String(body.pageId ?? "").trim();
+      if (!pageId) {
+        return json({ error: "pageId is required." }, 400);
+      }
+      try {
+        const page = await fetchSinglePage(pageId);
+        if (!page || !page.access_token) {
+          return json(
+            {
+              error: `Could not access Page with ID "${pageId}". Ensure your Facebook account has admin or content creation tasks on this Page.`,
+            },
+            404
+          );
+        }
+        const settings = await getSettings();
+        await upsertPages([page], settings.facebook_user_name);
+        return json({ ok: true, page });
+      } catch (err: any) {
+        return json({ error: err?.message || "Failed to retrieve Page from Facebook." }, 502);
+      }
     }
 
     return notFound();
@@ -1655,21 +1967,49 @@ export async function DELETE(req: Request, ctx: Ctx) {
 /* ------------------------------------------------------------- handlers */
 
 async function getPages(refresh: boolean) {
-  const db = supabaseAdmin();
   try {
-    if (refresh) {
-      const pages = await fetchPages();
-      if (pages.length > 0) {
-        await db.from("pages_cache").delete().neq("page_id", "");
-        await db
-          .from("pages_cache")
-          .insert(pages.map((p) => ({ page_id: p.id, name: p.name, category: p.category })));
+    const settings = await getSettings();
+    if (!settings.facebook_user_token) {
+      return json({ error: "Facebook is not connected." }, 409);
+    }
+
+    let pagesList = await listPages({ includeInactive: true });
+
+    // If explicit refresh requested, OR if cache is empty while account is connected:
+    if (refresh || pagesList.length === 0) {
+      const fetched = await fetchPages();
+      if (fetched.length > 0) {
+        await upsertPages(fetched, settings.facebook_user_name);
+        pagesList = await listPages({ includeInactive: true });
+
+        // Auto-select or preserve default page
+        const freshSettings = await getSettings();
+        const hasMatchingDefault = pagesList.some(
+          (p) => p.page_id === freshSettings.default_page_id && p.is_active
+        );
+        if (!hasMatchingDefault || !freshSettings.default_page_id) {
+          const firstActive = pagesList.find((p) => p.is_active) ?? pagesList[0];
+          if (firstActive) {
+            await setDefaultPage(firstActive.page_id);
+          }
+        }
       }
     }
 
-    const { data: cached } = await db.from("pages_cache").select("*").order("name");
-    const settings = await getSettings();
-    return json({ pages: cached ?? [], defaultPageId: settings.default_page_id });
+    const currentSettings = await getSettings();
+    return json({
+      pages: pagesList,
+      defaultPageId: currentSettings.default_page_id,
+      accountName: currentSettings.facebook_user_name,
+      connected: Boolean(currentSettings.facebook_user_token),
+      status: !currentSettings.facebook_user_token
+        ? "disconnected"
+        : pagesList.length === 0
+        ? "no_pages"
+        : currentSettings.default_page_id
+        ? "ready"
+        : "needs_selection",
+    });
   } catch (err) {
     if (err instanceof FacebookNotConnectedError) return json({ error: err.message }, 409);
     return json({ error: err instanceof Error ? err.message : "Failed to load Pages." }, 502);
@@ -1746,14 +2086,26 @@ async function oauthCallback(req: Request, url: URL) {
 
     try {
       const pages = await fetchPages();
-      if (pages.length === 1) {
-        await updateSettings({
-          default_page_id: pages[0].id,
-          default_page_name: pages[0].name,
-          default_page_token: pages[0].access_token,
-        });
+      if (pages.length > 0) {
+        let accountName: string | null = null;
+        try {
+          const acc = await fetchAccount();
+          accountName = acc.name;
+        } catch {}
+
+        await upsertPages(pages, accountName);
+
+        const currentSettings = await getSettings();
+        const existingDefaultMatch = pages.find((p) => p.id === currentSettings.default_page_id);
+        if (existingDefaultMatch) {
+          await setDefaultPage(existingDefaultMatch.id);
+        } else if (pages.length === 1 || !currentSettings.default_page_id) {
+          await setDefaultPage(pages[0].id);
+        }
       }
-    } catch {}
+    } catch (pageSyncErr) {
+      console.warn("OAuth callback page sync warning:", pageSyncErr);
+    }
 
     const res = redirectToSettings(url.origin, "connected");
     res.cookies.set(OAUTH_STATE_COOKIE, "", { path: "/", maxAge: 0 });
@@ -1784,16 +2136,25 @@ async function runCron(req: Request, url: URL) {
     }
   }
 
-  const due = await listDuePosts(new Date().toISOString());
-  const queueResults = [];
-  for (const post of due) {
-    const result = await publishPostNow(post.id);
-    queueResults.push({ id: result.id, status: result.status });
-  }
+  const nowParam = url.searchParams.get("now");
+  const dryRunParam =
+    url.searchParams.get("dryRun") === "1" || url.searchParams.get("dryRun") === "true";
+
+  const schedulerReport = await processDueScheduledPosts({
+    nowIso: nowParam ?? new Date().toISOString(),
+    dryRun: dryRunParam,
+  });
+
+  const autopilotResult = await maybeRunAutopilot();
 
   return json({
-    processedFromQueue: queueResults.length,
-    queueResults,
-    autopilot: await maybeRunAutopilot(),
+    processedFromQueue: schedulerReport.published,
+    queueResults: schedulerReport.results.map((r) => ({
+      id: r.postId,
+      status: r.status,
+      error: r.errorMessage,
+    })),
+    schedulerReport,
+    autopilot: autopilotResult,
   });
 }

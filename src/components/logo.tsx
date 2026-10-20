@@ -22,12 +22,18 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
-export function Logo({ className }: { className?: string }) {
+export function Logo({
+  className,
+  name = "Vetechno FB Auto Post",
+}: {
+  className?: string;
+  name?: string;
+}) {
   return (
     <div className={cn("flex items-center gap-2.5", className)}>
       <LogoMark />
       <span className="font-heading text-lg font-bold tracking-tight text-foreground">
-        Facebook Auto Bot
+        {name}
       </span>
     </div>
   );

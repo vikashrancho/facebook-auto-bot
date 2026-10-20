@@ -1,6 +1,7 @@
 import { publishPhoto, NoPageSelectedError, type PublishPhotoInput } from "@/lib/facebook/client";
 import { getPost, updatePostRecord } from "@/lib/db/posts";
 import { getSettings } from "@/lib/db/settings";
+import { getPageWithToken } from "@/lib/db/pages";
 import { composeMessage } from "@/lib/types";
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { Post } from "@/lib/types";
@@ -18,6 +19,7 @@ export type PublishResult = Post & {
   simulated?: boolean;
   simulatedFacebookPostId?: string;
   simulatedFacebookPostUrl?: string;
+  alreadyPublished?: boolean;
 };
 
 /**
@@ -37,6 +39,7 @@ export async function publishPostNow(
     return {
       ...post,
       simulated: options.dryRun ?? false,
+      alreadyPublished: true,
     };
   }
 
@@ -58,14 +61,28 @@ export async function publishPostNow(
 
   const settings = await getSettings();
 
-  const pageId = post.page_id ?? settings.default_page_id;
-  const pageToken =
-    post.page_id && post.page_id !== settings.default_page_id
-      ? null
-      : settings.default_page_token;
-
-  if (!pageId || !pageToken) {
+  const pageId = post.page_id || settings.default_page_id;
+  if (!pageId) {
     const errorMsg = new NoPageSelectedError().message;
+    if (options.dryRun) {
+      throw new Error(`Dry-run validation failed: ${errorMsg}`);
+    }
+    return updatePostRecord(postId, {
+      status: "failed",
+      error_message: errorMsg,
+    });
+  }
+
+  // Resolve target Page credentials using stored page token
+  const targetPage = await getPageWithToken(pageId);
+  const pageToken =
+    targetPage?.access_token ||
+    (pageId === settings.default_page_id ? settings.default_page_token : null);
+
+  if (!pageToken || (targetPage && targetPage.is_active === false)) {
+    const errorMsg = `Destination Facebook Page (${post.page_name || pageId}) is ${
+      targetPage?.is_active === false ? "disconnected or inactive" : "missing a valid access token"
+    }. Please reconnect this Page on the Pages screen.`;
     if (options.dryRun) {
       throw new Error(`Dry-run validation failed: ${errorMsg}`);
     }
@@ -113,7 +130,7 @@ export async function publishPostNow(
 
   if (claimError || !claimed) {
     const fresh = await getPost(postId);
-    if (fresh?.status === "posted") return fresh;
+    if (fresh?.status === "posted") return { ...fresh, alreadyPublished: true };
     throw new Error("Concurrent publishing detected. Request aborted to prevent duplicate posts.");
   }
 

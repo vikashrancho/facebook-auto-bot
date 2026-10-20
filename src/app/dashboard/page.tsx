@@ -7,6 +7,7 @@ import {
   Sparkle,
   ArrowRight,
   WarningCircle,
+  ImageSquare,
 } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,10 @@ function buildChartData(posted: { posted_at: string | null }[]) {
     d.setDate(d.getDate() - i);
     const key = d.toISOString().slice(0, 10);
     counts.set(key, 0);
-    labels.push({ date: key, label: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) });
+    labels.push({
+      date: key,
+      label: d.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    });
   }
 
   for (const post of posted) {
@@ -43,65 +47,44 @@ function buildChartData(posted: { posted_at: string | null }[]) {
   return labels.map((l) => ({ ...l, count: counts.get(l.date) ?? 0 }));
 }
 
-/**
- * Shown when the dashboard cannot read its own database.
- *
- * This is the first screen of a fresh install, so it has to be useful: an
- * unhandled throw here becomes React error #441, whose message production
- * deliberately redacts, leaving a new user with "Something went wrong" and
- * nothing to act on. The cause is almost always one of three setup steps, so
- * they are named directly, along with the underlying error.
- */
 function SetupNeeded({ reason }: { reason: string }) {
   return (
-    <div className="mx-auto max-w-2xl">
-      <Card className="border-warning/40 bg-warning/5">
-        <div className="flex items-start gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-warning/15 text-warning">
-            <WarningCircle size={22} weight="bold" />
+    <div className="mx-auto max-w-2xl py-8">
+      <Card className="border-amber-500/30 bg-amber-500/5 p-6 rounded-2xl">
+        <div className="flex items-start gap-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500">
+            <WarningCircle size={24} weight="bold" />
           </div>
           <div className="min-w-0">
-            <h2 className="font-heading font-bold text-foreground">
-              The database isn&apos;t set up yet
+            <h2 className="font-heading text-lg font-bold text-foreground">
+              Database Setup Required
             </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Everything else is deployed correctly — this screen just cannot read
-              from Supabase. It is almost always one of these:
+            <p className="mt-1 text-sm text-muted-foreground leading-relaxed">
+              The application is deployed, but unable to query the database.
+              Verify your Supabase credentials and schema:
             </p>
 
-            <ol className="mt-4 space-y-3 text-sm text-foreground">
+            <ol className="mt-4 space-y-2.5 text-xs sm:text-sm text-foreground list-decimal pl-4">
               <li>
-                <span className="font-semibold">The schema was never run.</span>{" "}
-                <span className="text-muted-foreground">
-                  In Supabase, open <strong>SQL Editor → New query</strong>, paste
-                  the whole of <code className="rounded bg-surface-2 px-1 text-xs">supabase/schema.sql</code>{" "}
-                  from the repository, and click Run. This is step 1 of the guide
-                  and the most common thing to miss.
-                </span>
+                <span className="font-semibold">Run schema:</span> In Supabase SQL Editor, execute{" "}
+                <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs text-primary">
+                  supabase/schema.sql
+                </code>.
               </li>
               <li>
-                <span className="font-semibold">An environment variable is wrong.</span>{" "}
-                <span className="text-muted-foreground">
-                  In Vercel, check{" "}
-                  <code className="rounded bg-surface-2 px-1 text-xs">NEXT_PUBLIC_SUPABASE_URL</code>{" "}
-                  and{" "}
-                  <code className="rounded bg-surface-2 px-1 text-xs">SUPABASE_SERVICE_ROLE_KEY</code>.
-                  The key must be the <strong>service_role</strong> one, not{" "}
-                  <code className="rounded bg-surface-2 px-1 text-xs">anon</code>. After
-                  changing either, redeploy — Vercel only applies variables to new
-                  deployments.
-                </span>
-              </li>
-              <li>
-                <span className="font-semibold">The Supabase project is paused.</span>{" "}
-                <span className="text-muted-foreground">
-                  Free projects pause after a stretch of inactivity. Open your
-                  Supabase dashboard and resume it; your data is still there.
-                </span>
+                <span className="font-semibold">Check environment variables:</span> Ensure{" "}
+                <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs">
+                  NEXT_PUBLIC_SUPABASE_URL
+                </code>{" "}
+                and{" "}
+                <code className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-xs">
+                  SUPABASE_SERVICE_ROLE_KEY
+                </code>{" "}
+                are configured.
               </li>
             </ol>
 
-            <p className="mt-4 rounded-lg bg-surface-2 px-3 py-2 font-mono text-xs break-words text-muted-foreground">
+            <p className="mt-4 rounded-xl bg-surface-2 p-3 font-mono text-xs break-all text-muted-foreground border border-border">
               {reason}
             </p>
           </div>
@@ -124,113 +107,186 @@ export default async function DashboardOverviewPage() {
   const posted = posts.filter((p: Post) => p.status === "posted");
   const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const postedThisWeek = posted.filter((p: Post) => p.posted_at && new Date(p.posted_at).getTime() > weekAgo);
-  const scheduled = posts.filter((p: Post) => p.status === "scheduled");
+  const inQueue = posts.filter((p: Post) => p.status === "scheduled" || p.status === "draft");
   const failed = posts.filter((p: Post) => p.status === "failed");
-  const recent = posts.slice(0, 8);
+  const recent = posts.slice(0, 6);
   const connected = isFacebookConnected(settings);
 
   const chartData = buildChartData(posted);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* 1. Connection Alert if not configured */}
       {!connected && (
-        <Card className="flex flex-col items-start justify-between gap-3 border-primary/30 bg-primary/5 sm:flex-row sm:items-center">
-          <div>
-            <p className="font-semibold text-foreground">Connect Facebook to start posting</p>
-            <p className="mt-0.5 text-sm text-muted-foreground">
-              You can still generate and preview posts, but publishing needs a connected Page.
+        <div className="flex flex-col items-start justify-between gap-4 rounded-2xl border border-primary/30 bg-primary/5 p-4 sm:p-5 sm:flex-row sm:items-center shadow-xs">
+          <div className="space-y-0.5">
+            <p className="font-semibold text-sm sm:text-base text-foreground">
+              Connect Facebook to start publishing
+            </p>
+            <p className="text-xs sm:text-sm text-muted-foreground">
+              You can generate and stage drafts via Custom GPT, but publishing requires an authorized Facebook Page.
             </p>
           </div>
-          <Link href="/dashboard/settings">
-            <Button size="sm">
-              Connect now <ArrowRight size={14} />
+          <Link href="/dashboard/settings" className="shrink-0">
+            <Button size="sm" className="gap-1.5 rounded-xl font-semibold">
+              <span>Connect Facebook</span>
+              <ArrowRight size={14} weight="bold" />
             </Button>
           </Link>
-        </Card>
+        </div>
       )}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Total posted" value={posted.length} icon={MegaphoneSimple} tone="primary" />
-        <StatCard label="Posted this week" value={postedThisWeek.length} icon={CalendarCheck} tone="success" />
-        <StatCard label="In queue" value={scheduled.length} icon={ClockCountdown} tone="warning" />
-        <StatCard label="Failed" value={failed.length} icon={ChartLineUp} />
+      {/* 2. Top Summary Stat Cards Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          label="Total posted"
+          value={posted.length}
+          icon={MegaphoneSimple}
+          tone="primary"
+        />
+        <StatCard
+          label="Posted this week"
+          value={postedThisWeek.length}
+          icon={CalendarCheck}
+          tone="success"
+        />
+        <StatCard
+          label="In queue"
+          value={inQueue.length}
+          icon={ClockCountdown}
+          tone="warning"
+        />
+        <StatCard
+          label="Failed"
+          value={failed.length}
+          icon={ChartLineUp}
+          tone={failed.length > 0 ? "danger" : "default"}
+        />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-        <Card>
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="font-heading text-base font-bold text-foreground">Posts published — last 14 days</h2>
+      {/* 3. Middle Section: Activity Chart (Left) & Quick Generate Panel (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        {/* Chart Column (Span 2) */}
+        <div className="lg:col-span-2 rounded-2xl border border-border/80 bg-surface p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="font-heading text-sm sm:text-base font-bold text-foreground">
+              Posts published — last 14 days
+            </h2>
+            <span className="text-xs text-muted-foreground font-medium">
+              {posted.length} total recorded
+            </span>
           </div>
           <PostsChart data={chartData} />
-        </Card>
+        </div>
 
-        <Card className="flex flex-col">
-          <h2 className="font-heading text-base font-bold text-foreground">Quick generate</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Pick a topic and let the bot write the copy and source the image.
-          </p>
-          <Link href="/dashboard/generate" className="mt-4">
-            <Button className="w-full">
-              <Sparkle size={16} weight="fill" /> Generate a post
+        {/* Quick Generate Panel (Span 1) */}
+        <div className="rounded-2xl border border-border/80 bg-surface p-5 sm:p-6 shadow-xs flex flex-col justify-between space-y-5">
+          <div className="space-y-2">
+            <h2 className="font-heading text-sm sm:text-base font-bold text-foreground">
+              Quick generate
+            </h2>
+            <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
+              Pick a topic and let the bot write the copy and source the image.
+            </p>
+          </div>
+
+          <Link href="/dashboard/generate" className="w-full">
+            <Button className="w-full py-3 rounded-xl gap-2 font-semibold shadow-md shadow-primary/20 bg-primary hover:bg-primary-hover text-primary-foreground">
+              <Sparkle size={18} weight="fill" />
+              <span>Generate a post</span>
             </Button>
           </Link>
 
-          <div className="mt-5 border-t border-border pt-4 text-sm">
+          <div className="border-t border-border/80 pt-4 space-y-2.5 text-xs sm:text-sm">
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Facebook</span>
-              <span className={connected ? "font-medium text-success" : "font-medium text-muted-foreground"}>
+              <span className={connected ? "font-semibold text-emerald-500" : "font-medium text-muted-foreground"}>
                 {connected ? (settings.facebook_user_name ?? "Connected") : "Not connected"}
               </span>
             </div>
-            <div className="mt-2 flex items-center justify-between">
+            <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Page</span>
-              <span className="truncate font-medium text-foreground">
-                {settings.default_page_name ?? "—"}
+              <span className="truncate font-semibold text-foreground max-w-[160px] text-right">
+                {settings.default_page_name ?? "None selected"}
               </span>
             </div>
-            <div className="mt-2 flex items-center justify-between">
+            <div className="flex items-center justify-between">
               <span className="text-muted-foreground">Autopilot</span>
-              <span className={settings.auto_post_enabled ? "font-medium text-success" : "font-medium text-muted-foreground"}>
+              <span className={settings.auto_post_enabled ? "font-semibold text-emerald-500" : "font-medium text-muted-foreground"}>
                 {settings.auto_post_enabled ? `On · ${settings.posts_per_day}/day` : "Off"}
               </span>
             </div>
           </div>
-        </Card>
+        </div>
       </div>
 
-      <Card>
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-heading text-base font-bold text-foreground">Recent activity</h2>
-          <Link href="/dashboard/history" className="text-sm font-medium text-primary hover:underline">
+      {/* 4. Bottom Section: Recent Activity Table */}
+      <div className="rounded-2xl border border-border/80 bg-surface p-5 sm:p-6 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-heading text-sm sm:text-base font-bold text-foreground">
+            Recent activity
+          </h2>
+          <Link
+            href="/dashboard/history"
+            className="text-xs sm:text-sm font-semibold text-primary hover:underline transition"
+          >
             View all
           </Link>
         </div>
 
         {recent.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            No posts yet — generate your first one to see it here.
-          </p>
+          <div className="py-12 text-center space-y-3">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-2 text-muted-foreground">
+              <ImageSquare size={24} />
+            </div>
+            <p className="text-sm font-medium text-foreground">No posts yet</p>
+            <p className="text-xs text-muted-foreground max-w-sm mx-auto">
+              Stage a content request or generate your first post to see your activity timeline here.
+            </p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <tbody>
+            <table className="w-full text-left text-xs sm:text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-muted-foreground text-[11px] uppercase tracking-wider font-semibold">
+                  <th className="py-2.5 pr-3 w-12">Image</th>
+                  <th className="py-2.5 pr-3">Title</th>
+                  <th className="py-2.5 pr-3 hidden sm:table-cell">Page</th>
+                  <th className="py-2.5 pr-3">Status</th>
+                  <th className="py-2.5 text-right">Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/50">
                 {recent.map((post: Post) => (
-                  <tr key={post.id} className="border-b border-border last:border-0">
-                    <td className="w-10 py-2.5 pr-3">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={post.image_url} alt="" className="h-10 w-10 rounded-lg object-cover" />
+                  <tr key={post.id} className="hover:bg-surface-2/40 transition">
+                    <td className="py-3 pr-3">
+                      {post.image_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={post.image_url}
+                          alt=""
+                          className="h-10 w-10 rounded-lg object-cover bg-surface-2 border border-border"
+                        />
+                      ) : (
+                        <div className="h-10 w-10 rounded-lg bg-surface-2 border border-border flex items-center justify-center text-muted-foreground">
+                          <ImageSquare size={16} />
+                        </div>
+                      )}
                     </td>
-                    <td className="max-w-[220px] truncate py-2.5 pr-3 font-medium text-foreground">
+                    <td className="py-3 pr-3 font-medium text-foreground truncate max-w-[200px] sm:max-w-[340px]">
                       {post.title}
                     </td>
-                    <td className="hidden py-2.5 pr-3 text-muted-foreground sm:table-cell">
+                    <td className="py-3 pr-3 text-muted-foreground hidden sm:table-cell truncate max-w-[160px]">
                       {post.page_name ?? "—"}
                     </td>
-                    <td className="py-2.5 pr-3">
+                    <td className="py-3 pr-3">
                       <StatusBadge status={post.status} />
                     </td>
-                    <td className="py-2.5 text-right text-xs text-muted-foreground">
-                      {new Date(post.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    <td className="py-3 text-right text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(post.created_at).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                      })}
                     </td>
                   </tr>
                 ))}
@@ -238,7 +294,7 @@ export default async function DashboardOverviewPage() {
             </table>
           </div>
         )}
-      </Card>
+      </div>
     </div>
   );
 }

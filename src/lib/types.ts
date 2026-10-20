@@ -109,13 +109,30 @@ export interface Post {
   approved_by_user?: boolean;
   approved_at?: string | null;
   approval_content_hash?: string | null;
+  schedule_notes?: string | null;
+  last_attempt_at?: string | null;
+  retry_count?: number;
 }
+
+export type CalendarView = "month" | "week" | "day" | "agenda";
 
 export interface PageCache {
   page_id: string;
   name: string;
   category: string | null;
+  picture_url?: string | null;
+  tasks?: string[];
+  account_name?: string | null;
+  is_active?: boolean;
+  is_default?: boolean;
+  can_post?: boolean;
   fetched_at: string;
+  connected_at?: string;
+}
+
+/** Stored Page with its private access token (server-only, never sent to browser/GPT). */
+export interface StoredFacebookPage extends PageCache {
+  access_token: string;
 }
 
 /** Which service wrote the copy. "template" means every provider was unreachable. */

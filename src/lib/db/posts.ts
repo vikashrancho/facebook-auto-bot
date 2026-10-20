@@ -50,7 +50,27 @@ export async function createPostRecord(
 export async function updatePostRecord(id: string, patch: Partial<Post>): Promise<Post> {
   const db = supabaseAdmin();
   const { data, error } = await db.from("posts").update(patch).eq("id", id).select().single();
-  if (error) throw new Error(`Failed to update post: ${error.message}`);
+  if (error) {
+    // If an optional scheduling column does not exist yet on Supabase, retry without it
+    if (
+      error.message.includes("column of 'posts' in the schema cache") &&
+      (patch.schedule_notes !== undefined ||
+        patch.last_attempt_at !== undefined ||
+        patch.retry_count !== undefined)
+    ) {
+      const { schedule_notes, last_attempt_at, retry_count, ...fallbackPatch } = patch;
+      const fallbackRes = await db
+        .from("posts")
+        .update(fallbackPatch)
+        .eq("id", id)
+        .select()
+        .single();
+      if (!fallbackRes.error && fallbackRes.data) {
+        return fallbackRes.data as Post;
+      }
+    }
+    throw new Error(`Failed to update post: ${error.message}`);
+  }
   return data as Post;
 }
 
@@ -71,5 +91,31 @@ export async function listDuePosts(nowIso: string): Promise<Post[]> {
     .order("scheduled_at", { ascending: true })
     .limit(20);
   if (error) throw new Error(`Failed to list due posts: ${error.message}`);
+  return (data ?? []) as Post[];
+}
+
+/** Posts query optimized for the Content Calendar */
+export async function listCalendarPosts(opts: {
+  startDate?: string;
+  endDate?: string;
+  status?: PostStatus | PostStatus[];
+} = {}): Promise<Post[]> {
+  const db = supabaseAdmin();
+  let query = db.from("posts").select("*").order("scheduled_at", { ascending: true, nullsFirst: false });
+
+  if (opts.startDate) {
+    query = query.gte("scheduled_at", opts.startDate);
+  }
+  if (opts.endDate) {
+    query = query.lte("scheduled_at", opts.endDate);
+  }
+  if (opts.status) {
+    query = Array.isArray(opts.status)
+      ? query.in("status", opts.status)
+      : query.eq("status", opts.status);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(`Failed to list calendar posts: ${error.message}`);
   return (data ?? []) as Post[];
 }

@@ -30,6 +30,7 @@ export function buildAuthorizeUrl(creds: FacebookCredentials, state: string) {
     redirect_uri: creds.redirectUri,
     response_type: "code",
     state,
+    auth_type: "rerequest",
   });
 
   if (creds.configId) {

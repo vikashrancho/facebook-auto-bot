@@ -6,9 +6,8 @@ import {
   House,
   MagicWand,
   ImageSquare,
-  Lightbulb,
-  SlidersHorizontal,
   ClockCountdown,
+  CalendarDots,
   ListChecks,
   FlagBanner,
   GearSix,
@@ -20,9 +19,8 @@ const NAV = [
   { href: "/dashboard", label: "Overview", icon: House },
   { href: "/dashboard/generate", label: "Generate", icon: MagicWand },
   { href: "/dashboard/templates", label: "Templates", icon: ImageSquare },
-  { href: "/dashboard/topics", label: "Topics", icon: Lightbulb },
-  { href: "/dashboard/system-prompt", label: "System Prompt", icon: SlidersHorizontal },
   { href: "/dashboard/queue", label: "Queue", icon: ClockCountdown },
+  { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDots },
   { href: "/dashboard/history", label: "History", icon: ListChecks },
   { href: "/dashboard/pages", label: "Pages", icon: FlagBanner },
   { href: "/dashboard/settings", label: "Settings", icon: GearSix },
@@ -58,10 +56,6 @@ export function Sidebar() {
           );
         })}
       </nav>
-
-      <div className="border-t border-border p-4 text-xs text-muted-foreground">
-        Free-tier powered · AI text &amp; images at $0
-      </div>
     </aside>
   );
 }

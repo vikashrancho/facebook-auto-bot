@@ -184,3 +184,20 @@ create index if not exists content_requests_post_id_idx on content_requests(post
 
 alter table app_settings add column if not exists chatgpt_custom_gpt_url text;
 
+-- Content Calendar & Automatic Scheduling upgrades
+alter table posts add column if not exists schedule_notes text;
+alter table posts add column if not exists last_attempt_at timestamptz;
+alter table posts add column if not exists retry_count integer not null default 0;
+create index if not exists posts_scheduled_cron_idx on posts (status, scheduled_at, approved_by_user) where status = 'scheduled';
+create index if not exists posts_calendar_range_idx on posts (scheduled_at) where scheduled_at is not null;
+
+-- Multi-Facebook-Page support upgrades
+alter table pages_cache add column if not exists access_token text;
+alter table pages_cache add column if not exists picture_url text;
+alter table pages_cache add column if not exists tasks text[] default '{}';
+alter table pages_cache add column if not exists account_name text;
+alter table pages_cache add column if not exists is_active boolean not null default true;
+alter table pages_cache add column if not exists connected_at timestamptz not null default now();
+create index if not exists posts_page_id_idx on posts (page_id);
+
+

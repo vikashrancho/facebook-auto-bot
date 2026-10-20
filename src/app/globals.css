@@ -5,18 +5,18 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --background: #faf9fb;
+  --background: #f0f2f5;
   --surface: #ffffff;
-  --surface-2: #f3f1f5;
-  --foreground: #17151a;
-  --muted-foreground: #6b7280;
-  --border: #e7e5ea;
+  --surface-2: #e4e6eb;
+  --foreground: #050505;
+  --muted-foreground: #65676b;
+  --border: #ced0d4;
 
-  --primary: #2c5fd4;
+  --primary: #1877f2;
   --primary-foreground: #ffffff;
-  --primary-hover: #2450b4;
+  --primary-hover: #166fe5;
 
-  --accent: #2563eb;
+  --accent: #1877f2;
   --accent-foreground: #ffffff;
 
   --success: #16a34a;
@@ -26,24 +26,24 @@
   --destructive: #dc2626;
   --destructive-foreground: #ffffff;
 
-  --ring: #e01e4d;
+  --ring: #1877f2;
   --radius: 1rem;
 }
 
 .dark {
-  --background: #0b0b0f;
-  --surface: #16161d;
-  --surface-2: #1d1d26;
-  --foreground: #f5f5f7;
-  --muted-foreground: #9aa0ac;
-  --border: #27272f;
+  --background: #18191a;
+  --surface: #242526;
+  --surface-2: #2e3033;
+  --foreground: #e4e6eb;
+  --muted-foreground: #b0b3b8;
+  --border: #3a3b3c;
 
-  --primary: #5b8cff;
-  --primary-foreground: #0b0b0f;
-  --primary-hover: #7ba3ff;
+  --primary: #1877f2;
+  --primary-foreground: #ffffff;
+  --primary-hover: #166fe5;
 
-  --accent: #5b8def;
-  --accent-foreground: #0b0b0f;
+  --accent: #1877f2;
+  --accent-foreground: #ffffff;
 
   --success: #34d399;
   --success-foreground: #06281c;
@@ -52,7 +52,7 @@
   --destructive: #f87171;
   --destructive-foreground: #2b0a0a;
 
-  --ring: #ff3d68;
+  --ring: #1877f2;
 }
 
 @theme inline {

@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/server";
 import { GRAPH_BASE } from "@/lib/facebook/oauth";
+import { env } from "@/lib/env";
 import type { AppSettings } from "@/lib/types";
 
 export class FacebookNotConnectedError extends Error {
@@ -47,42 +48,293 @@ export interface FacebookPage {
   category: string | null;
   /** Non-expiring when minted from a long-lived user token. */
   access_token: string;
+  tasks?: string[];
+  picture_url?: string | null;
+}
+
+/** Revoke user permissions on Facebook side so subsequent connect re-prompts cleanly. */
+export async function revokeFacebookAccess(userToken: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${GRAPH_BASE}/me/permissions?${new URLSearchParams({ access_token: userToken })}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = await res.json().catch(() => null);
+    return Boolean(res.ok && (body?.success || body === true));
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Every Page this person can create content on. `tasks` is filtered rather
- * than trusted wholesale: being able to see a Page does not mean being allowed
- * to publish to it, and finding that out at post time would be far worse.
+ * Every Page this person can create content on.
+ * Queries both:
+ * 1. Classic /me/accounts (with pagination, tasks, and profile picture)
+ * 2. Granular scopes target IDs from debug_token (Meta Login for Business & New Pages Experience)
  */
 export async function fetchPages(): Promise<FacebookPage[]> {
   const settings = await loadSettings();
   if (!settings.facebook_user_token) throw new FacebookNotConnectedError();
 
-  const pages: FacebookPage[] = [];
+  const pagesMap = new Map<string, FacebookPage>();
   let after: string | undefined;
 
-  do {
-    const params: Record<string, string> = {
-      access_token: settings.facebook_user_token,
-      fields: "id,name,category,access_token,tasks",
-      limit: "100",
-    };
-    if (after) params.after = after;
+  // 1. Classic /me/accounts
+  try {
+    do {
+      const params: Record<string, string> = {
+        access_token: settings.facebook_user_token,
+        fields: "id,name,category,access_token,tasks,picture{url}",
+        limit: "100",
+      };
+      if (after) params.after = after;
 
-    const data = await graph("/me/accounts", params);
-    for (const p of data.data ?? []) {
-      if (Array.isArray(p.tasks) && !p.tasks.includes("CREATE_CONTENT")) continue;
-      pages.push({
-        id: p.id,
-        name: p.name,
-        category: p.category ?? null,
-        access_token: p.access_token,
+      const data = await graph("/me/accounts", params);
+      for (const p of data.data ?? []) {
+        if (Array.isArray(p.tasks) && p.tasks.length > 0 && !p.tasks.includes("CREATE_CONTENT") && !p.tasks.includes("MANAGE")) {
+          continue;
+        }
+        if (p.id && p.access_token) {
+          const picUrl = p.picture?.data?.url ?? null;
+          pagesMap.set(p.id, {
+            id: p.id,
+            name: p.name,
+            category: p.category ?? null,
+            access_token: p.access_token,
+            tasks: Array.isArray(p.tasks) ? p.tasks : [],
+            picture_url: picUrl,
+          });
+        }
+      }
+      after = data.paging?.cursors?.after && data.paging?.next ? data.paging.cursors.after : undefined;
+    } while (after);
+  } catch (err) {
+    // Non-fatal if /me/accounts fails (e.g. user uses New Pages Experience / Business Assets)
+  }
+
+  // 2. Discover Pages from granular scopes via debug_token (Meta Login for Business & New Pages Experience)
+  const appId = settings.facebook_app_id || env.facebookAppIdOptional;
+  const appSecret = settings.facebook_app_secret || env.facebookAppSecretOptional;
+  if (appId && appSecret) {
+    try {
+      const appToken = `${appId}|${appSecret}`;
+      const debugData = await graph("/debug_token", {
+        input_token: settings.facebook_user_token,
+        access_token: appToken,
       });
-    }
-    after = data.paging?.cursors?.after && data.paging?.next ? data.paging.cursors.after : undefined;
-  } while (after);
 
-  return pages;
+      const granular = debugData?.data?.granular_scopes ?? [];
+      const targetIds = new Set<string>();
+
+      for (const g of granular) {
+        if (["pages_show_list", "pages_manage_posts", "pages_read_engagement"].includes(g.scope)) {
+          for (const tid of g.target_ids ?? []) {
+            if (tid) targetIds.add(String(tid));
+          }
+        }
+      }
+
+      for (const targetId of targetIds) {
+        if (!pagesMap.has(targetId)) {
+          try {
+            const pData = await graph(`/${targetId}`, {
+              access_token: settings.facebook_user_token,
+              fields: "id,name,category,access_token,picture{url}",
+            });
+            if (pData?.id && pData?.access_token) {
+              const picUrl = pData.picture?.data?.url ?? null;
+              pagesMap.set(pData.id, {
+                id: pData.id,
+                name: pData.name,
+                category: pData.category ?? null,
+                access_token: pData.access_token,
+                tasks: ["CREATE_CONTENT", "MANAGE"],
+                picture_url: picUrl,
+              });
+            }
+          } catch {
+            // Ignore single page lookup failures
+          }
+        }
+      }
+    } catch {
+      // Non-fatal if debug_token is unavailable
+    }
+  }
+
+  // 3. If settings.default_page_id exists and is not yet in the map, attempt to refresh it directly
+  if (settings.default_page_id && !pagesMap.has(settings.default_page_id)) {
+    try {
+      const pData = await graph(`/${settings.default_page_id}`, {
+        access_token: settings.facebook_user_token,
+        fields: "id,name,category,access_token,picture{url}",
+      });
+      if (pData?.id && pData?.access_token) {
+        const picUrl = pData.picture?.data?.url ?? null;
+        pagesMap.set(pData.id, {
+          id: pData.id,
+          name: pData.name,
+          category: pData.category ?? null,
+          access_token: pData.access_token,
+          tasks: ["CREATE_CONTENT", "MANAGE"],
+          picture_url: picUrl,
+        });
+      }
+    } catch {
+      // If user token direct query fails, try with default_page_token if stored
+      if (settings.default_page_token) {
+        try {
+          const pData = await graph(`/${settings.default_page_id}`, {
+            access_token: settings.default_page_token,
+            fields: "id,name,category,access_token,picture{url}",
+          });
+          if (pData?.id) {
+            const picUrl = pData.picture?.data?.url ?? null;
+            pagesMap.set(pData.id, {
+              id: pData.id,
+              name: pData.name,
+              category: pData.category ?? null,
+              access_token: settings.default_page_token,
+              tasks: ["CREATE_CONTENT", "MANAGE"],
+              picture_url: picUrl,
+            });
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // 4. Query any other pages previously cached in pages_cache to keep them synced
+  try {
+    const db = supabaseAdmin();
+    const { data: cached } = await db
+      .from("pages_cache")
+      .select("page_id, name, category, access_token, picture_url, tasks, is_active");
+    if (cached) {
+      for (const cp of cached) {
+        if (!pagesMap.has(cp.page_id)) {
+          // Attempt direct lookup with user token to refresh its access_token and picture
+          try {
+            const pData = await graph(`/${cp.page_id}`, {
+              access_token: settings.facebook_user_token,
+              fields: "id,name,category,access_token,picture{url}",
+            });
+            if (pData?.id && pData?.access_token) {
+              pagesMap.set(pData.id, {
+                id: pData.id,
+                name: pData.name,
+                category: pData.category ?? cp.category ?? null,
+                access_token: pData.access_token,
+                tasks: cp.tasks && cp.tasks.length > 0 ? cp.tasks : ["CREATE_CONTENT", "MANAGE"],
+                picture_url: pData.picture?.data?.url ?? cp.picture_url ?? null,
+              });
+              continue;
+            }
+          } catch {}
+
+          // If direct refresh fails but page has a stored access_token, preserve it!
+          if (cp.access_token) {
+            pagesMap.set(cp.page_id, {
+              id: cp.page_id,
+              name: cp.name,
+              category: cp.category ?? null,
+              access_token: cp.access_token,
+              tasks: cp.tasks && cp.tasks.length > 0 ? cp.tasks : ["CREATE_CONTENT", "MANAGE"],
+              picture_url: cp.picture_url ?? null,
+            });
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 5. Query any other pages referenced in posts or content_requests
+  try {
+    const db = supabaseAdmin();
+    const { data: postPageIds } = await db
+      .from("posts")
+      .select("page_id")
+      .not("page_id", "is", null);
+    if (postPageIds) {
+      const distinctIds = Array.from(
+        new Set(postPageIds.map((p: any) => p.page_id).filter(Boolean))
+      );
+      for (const pid of distinctIds) {
+        if (!pagesMap.has(pid)) {
+          try {
+            const pData = await graph(`/${pid}`, {
+              access_token: settings.facebook_user_token,
+              fields: "id,name,category,access_token,picture{url}",
+            });
+            if (pData?.id && pData?.access_token) {
+              pagesMap.set(pData.id, {
+                id: pData.id,
+                name: pData.name,
+                category: pData.category ?? null,
+                access_token: pData.access_token,
+                tasks: ["CREATE_CONTENT", "MANAGE"],
+                picture_url: pData.picture?.data?.url ?? null,
+              });
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+
+  return Array.from(pagesMap.values());
+}
+
+/**
+ * Fetch and authorize a single Facebook Page by ID directly.
+ * Useful for NPE / Business Suite Pages that do not appear on /me/accounts.
+ */
+export async function fetchSinglePage(pageId: string): Promise<FacebookPage | null> {
+  const settings = await loadSettings();
+  if (!settings.facebook_user_token) throw new FacebookNotConnectedError();
+
+  const cleanId = pageId.trim();
+  if (!cleanId) return null;
+
+  try {
+    const pData = await graph(`/${cleanId}`, {
+      access_token: settings.facebook_user_token,
+      fields: "id,name,category,access_token,picture{url}",
+    });
+    if (pData?.id && pData?.access_token) {
+      return {
+        id: pData.id,
+        name: pData.name,
+        category: pData.category ?? null,
+        access_token: pData.access_token,
+        tasks: ["CREATE_CONTENT", "MANAGE"],
+        picture_url: pData.picture?.data?.url ?? null,
+      };
+    }
+  } catch (err: any) {
+    // If user token fails, try default page token if this page matches default
+    if (cleanId === settings.default_page_id && settings.default_page_token) {
+      try {
+        const pData = await graph(`/${cleanId}`, {
+          access_token: settings.default_page_token,
+          fields: "id,name,category,access_token,picture{url}",
+        });
+        if (pData?.id) {
+          return {
+            id: pData.id,
+            name: pData.name,
+            category: pData.category ?? null,
+            access_token: settings.default_page_token,
+            tasks: ["CREATE_CONTENT", "MANAGE"],
+            picture_url: pData.picture?.data?.url ?? null,
+          };
+        }
+      } catch {}
+    }
+    throw err;
+  }
+
+  return null;
 }
 
 /** Permissions this app cannot work without. */
