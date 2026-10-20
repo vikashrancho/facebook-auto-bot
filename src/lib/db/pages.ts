@@ -155,6 +155,142 @@ export async function getPageWithToken(pageId: string): Promise<StoredFacebookPa
   return null;
 }
 
+export interface PageResolutionResult {
+  ok: boolean;
+  page?: StoredFacebookPage;
+  error?: "PAGE_NOT_FOUND" | "AMBIGUOUS_PAGE_NAME" | "PAGE_INACTIVE" | "NO_PAGE_SELECTED";
+  message?: string;
+  availablePages?: Array<{ pageId: string; name: string }>;
+}
+
+/**
+ * Universal destination Facebook Page resolver.
+ * Accurately resolves a target Page by explicit pageId or exact/normalized pageName.
+ * Never silently falls back to the default Page when an explicit target is missing or ambiguous.
+ */
+export async function resolveTargetFacebookPage(options: {
+  pageId?: string | null;
+  pageName?: string | null;
+  allowDefault?: boolean;
+}): Promise<PageResolutionResult> {
+  const db = supabaseAdmin();
+  const settings = await getSettings();
+
+  const rawId = options.pageId?.trim() || null;
+  const rawName = options.pageName?.trim() || null;
+  const allowDefault = options.allowDefault ?? false;
+
+  // Fetch all active pages from cache
+  const { data: allActiveRows } = await db
+    .from("pages_cache")
+    .select("page_id, name, is_active")
+    .eq("is_active", true);
+
+  const activePages = allActiveRows ?? [];
+  const availablePages = activePages.map((p) => ({ pageId: p.page_id, name: p.name.trim() }));
+
+  // 1. If an explicit pageId was supplied:
+  if (rawId) {
+    // Check if rawId matches page_id directly
+    const directMatch = await getPageWithToken(rawId);
+    if (directMatch && directMatch.is_active !== false) {
+      return { ok: true, page: directMatch };
+    }
+
+    // Sometimes LLMs/users pass the Page Name into pageId (e.g. pageId: "Loving Doggy")
+    const matchingByName = activePages.filter(
+      (p) => p.name.trim().toLowerCase() === rawId.toLowerCase()
+    );
+
+    if (matchingByName.length === 1) {
+      const page = await getPageWithToken(matchingByName[0].page_id);
+      if (page && page.is_active !== false) {
+        return { ok: true, page };
+      }
+    } else if (matchingByName.length > 1) {
+      return {
+        ok: false,
+        error: "AMBIGUOUS_PAGE_NAME",
+        message: `Ambiguous target Page name: Multiple connected Pages match "${rawId}". Please specify the exact numerical pageId.`,
+        availablePages,
+      };
+    }
+
+    // Check if the page exists in cache but is inactive
+    const inactiveCheck = await getPageWithToken(rawId);
+    if (inactiveCheck && inactiveCheck.is_active === false) {
+      return {
+        ok: false,
+        error: "PAGE_INACTIVE",
+        message: `Destination Facebook Page "${inactiveCheck.name}" (${rawId}) is currently disconnected or inactive. Please reconnect it on the Pages screen.`,
+        availablePages,
+      };
+    }
+
+    // A specific ID was requested but could not be found
+    return {
+      ok: false,
+      error: "PAGE_NOT_FOUND",
+      message: `Destination Facebook Page with ID or name '${rawId}' is not connected, inactive, or unauthorized. Call getConnectedFacebookPages to see available Pages.`,
+      availablePages,
+    };
+  }
+
+  // 2. If an explicit pageName was supplied (without pageId):
+  if (rawName) {
+    // Check if rawName matches an exact Page name (case-insensitive, trimmed)
+    const matchingByName = activePages.filter(
+      (p) => p.name.trim().toLowerCase() === rawName.toLowerCase()
+    );
+
+    if (matchingByName.length === 1) {
+      const page = await getPageWithToken(matchingByName[0].page_id);
+      if (page && page.is_active !== false) {
+        return { ok: true, page };
+      }
+    } else if (matchingByName.length > 1) {
+      return {
+        ok: false,
+        error: "AMBIGUOUS_PAGE_NAME",
+        message: `Ambiguous target Page name: Multiple connected Pages match "${rawName}". Please specify the exact numerical pageId.`,
+        availablePages,
+      };
+    }
+
+    // Also check if rawName was actually a numerical page_id passed in pageName
+    const directMatch = await getPageWithToken(rawName);
+    if (directMatch && directMatch.is_active !== false) {
+      return { ok: true, page: directMatch };
+    }
+
+    // A specific name was requested but could not be found
+    return {
+      ok: false,
+      error: "PAGE_NOT_FOUND",
+      message: `Destination Facebook Page with name '${rawName}' was requested, but no active connected Page was found. Call getConnectedFacebookPages to see available Pages.`,
+      availablePages,
+    };
+  }
+
+  // 3. Neither pageId nor pageName was requested:
+  // Only fall back to default if allowDefault is explicitly true
+  if (allowDefault) {
+    if (settings.default_page_id) {
+      const defaultPage = await getPageWithToken(settings.default_page_id);
+      if (defaultPage && defaultPage.is_active !== false) {
+        return { ok: true, page: defaultPage };
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    error: "NO_PAGE_SELECTED",
+    message: "No destination Facebook Page was specified and no active default Page is configured in Settings. Please specify pageId or pageName.",
+    availablePages,
+  };
+}
+
 /**
  * Persist discovered Pages using safe upsert.
  * Preserves existing Page records without deleting them!

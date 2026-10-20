@@ -399,3 +399,223 @@ export async function publishPhoto(input: PublishPhotoInput): Promise<{ id: stri
   );
   return { id: data.post_id ?? data.id };
 }
+
+export interface FacebookDiagnosticResult {
+  connectionStatus: "connected" | "disconnected" | "reauthorization_required" | "invalid_token" | "page_error" | "ready";
+  tokenValid: boolean;
+  tokenExpired: boolean;
+  tokenType: "PAGE" | "USER" | "NONE";
+  metaAppId: string | null;
+  appIdMatch: boolean;
+  selectedPageId: string | null;
+  selectedPageName: string | null;
+  pageIdMatch: boolean;
+  pageTokenValid: boolean;
+  canPublish: boolean;
+  requiredPermissionsPresent: boolean;
+  missingPermissions: string[];
+  reauthorizationRequired: boolean;
+  errorCode: string | null;
+  message: string;
+}
+
+/**
+ * Server-side Facebook connection and Page credential diagnostic.
+ * Validates User token and Page Access Token against Meta Graph API.
+ * Returns strictly sanitized status flags and diagnostic messages.
+ * NEVER returns the access token itself or sensitive credentials.
+ */
+export async function diagnoseFacebookConnection(
+  targetPageId?: string
+): Promise<FacebookDiagnosticResult> {
+  const settings = await loadSettings();
+
+  if (!settings.facebook_user_token) {
+    return {
+      connectionStatus: "disconnected",
+      tokenValid: false,
+      tokenExpired: false,
+      tokenType: "NONE",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: null,
+      selectedPageName: null,
+      pageIdMatch: false,
+      pageTokenValid: false,
+      canPublish: false,
+      requiredPermissionsPresent: false,
+      missingPermissions: REQUIRED_PERMISSIONS,
+      reauthorizationRequired: true,
+      errorCode: "NOT_CONNECTED",
+      message: "Facebook account is not connected. Reconnection is required in Settings.",
+    };
+  }
+
+  // Detect test fixtures / corrupted tokens
+  if (
+    settings.facebook_user_token.startsWith("mock_") ||
+    settings.facebook_user_token.startsWith("test_") ||
+    settings.facebook_user_token.length < 30
+  ) {
+    return {
+      connectionStatus: "invalid_token",
+      tokenValid: false,
+      tokenExpired: false,
+      tokenType: "USER",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: settings.default_page_id || null,
+      selectedPageName: settings.default_page_name || null,
+      pageIdMatch: false,
+      pageTokenValid: false,
+      canPublish: false,
+      requiredPermissionsPresent: false,
+      missingPermissions: [],
+      reauthorizationRequired: true,
+      errorCode: "CORRUPT_OR_MOCK_TOKEN",
+      message: "The stored Facebook User token is a test placeholder or corrupted. Please reconnect in Settings.",
+    };
+  }
+
+  // Check user token validity and permissions
+  let missing: string[] = [];
+  try {
+    const account = await graph("/me", {
+      access_token: settings.facebook_user_token,
+      fields: "id,name",
+    });
+    if (!account?.id) {
+      throw new Error("Unable to verify user account on Meta Graph API.");
+    }
+    missing = await missingPermissions(settings.facebook_user_token);
+  } catch (err: any) {
+    const errMsg = err?.message || "";
+    const isExpired = /expired|session has expired|invalid oauth access token|\(#190\)/i.test(errMsg);
+    return {
+      connectionStatus: "reauthorization_required",
+      tokenValid: false,
+      tokenExpired: isExpired,
+      tokenType: "USER",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: settings.default_page_id || null,
+      selectedPageName: settings.default_page_name || null,
+      pageIdMatch: false,
+      pageTokenValid: false,
+      canPublish: false,
+      requiredPermissionsPresent: false,
+      missingPermissions: REQUIRED_PERMISSIONS,
+      reauthorizationRequired: true,
+      errorCode: isExpired ? "TOKEN_EXPIRED" : "INVALID_TOKEN",
+      message: `Facebook User access token is ${isExpired ? "expired" : "invalid or revoked"}. Please re-authenticate your Facebook account in Settings.`,
+    };
+  }
+
+  // Resolve target Page
+  const pageId = targetPageId || settings.default_page_id;
+  if (!pageId) {
+    return {
+      connectionStatus: "connected",
+      tokenValid: true,
+      tokenExpired: false,
+      tokenType: "USER",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: null,
+      selectedPageName: null,
+      pageIdMatch: false,
+      pageTokenValid: false,
+      canPublish: false,
+      requiredPermissionsPresent: missing.length === 0,
+      missingPermissions: missing,
+      reauthorizationRequired: false,
+      errorCode: "NO_PAGE_SELECTED",
+      message: "Facebook account is connected, but no default Facebook Page is selected. Please select a Page on the Pages screen.",
+    };
+  }
+
+  // Fetch page credentials from pages_cache
+  const db = supabaseAdmin();
+  const { data: pageRecord } = await db
+    .from("pages_cache")
+    .select("page_id, name, access_token, is_active, tasks")
+    .eq("page_id", pageId)
+    .maybeSingle();
+
+  const pageToken =
+    pageRecord?.access_token ||
+    (pageId === settings.default_page_id ? settings.default_page_token : null);
+
+  if (!pageToken || pageToken.startsWith("mock_") || pageToken.startsWith("test_") || pageToken.length < 30) {
+    return {
+      connectionStatus: "page_error",
+      tokenValid: true,
+      tokenExpired: false,
+      tokenType: "USER",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: pageId,
+      selectedPageName: pageRecord?.name || settings.default_page_name || null,
+      pageIdMatch: false,
+      pageTokenValid: false,
+      canPublish: false,
+      requiredPermissionsPresent: missing.length === 0,
+      missingPermissions: missing,
+      reauthorizationRequired: true,
+      errorCode: "INVALID_PAGE_TOKEN",
+      message: `The selected Page (${pageRecord?.name || settings.default_page_name || pageId}) does not have a valid Page Access Token. Please re-select or reconnect on the Pages screen.`,
+    };
+  }
+
+  // Validate Page token against Graph API
+  try {
+    const pageData = await graph(`/${pageId}`, {
+      access_token: pageToken,
+      fields: "id,name,can_post,category",
+    });
+
+    const pageIdMatch = pageData?.id === pageId;
+    const canPublish = Boolean(pageData?.can_post !== false);
+
+    return {
+      connectionStatus: canPublish ? "ready" : "page_error",
+      tokenValid: true,
+      tokenExpired: false,
+      tokenType: "PAGE",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: pageId,
+      selectedPageName: pageData?.name || pageRecord?.name || settings.default_page_name || null,
+      pageIdMatch,
+      pageTokenValid: true,
+      canPublish,
+      requiredPermissionsPresent: missing.length === 0,
+      missingPermissions: missing,
+      reauthorizationRequired: false,
+      errorCode: canPublish ? null : "CANNOT_POST",
+      message: canPublish
+        ? `Facebook connection and destination Page "${pageData?.name || pageId}" are valid and authorized to publish.`
+        : `Page token is valid, but Meta reports can_post=false for "${pageData?.name || pageId}".`,
+    };
+  } catch (pageErr: any) {
+    const isExpired = /expired|session has expired|invalid oauth access token|\(#190\)/i.test(pageErr.message);
+    return {
+      connectionStatus: "page_error",
+      tokenValid: false,
+      tokenExpired: isExpired,
+      tokenType: "PAGE",
+      metaAppId: settings.facebook_app_id || env.facebookAppIdOptional || null,
+      appIdMatch: true,
+      selectedPageId: pageId,
+      selectedPageName: pageRecord?.name || settings.default_page_name || null,
+      pageIdMatch: false,
+      pageTokenValid: false,
+      canPublish: false,
+      requiredPermissionsPresent: missing.length === 0,
+      missingPermissions: missing,
+      reauthorizationRequired: true,
+      errorCode: isExpired ? "PAGE_TOKEN_EXPIRED" : "PAGE_TOKEN_REJECTED",
+      message: `Facebook rejected the Page token for "${pageRecord?.name || pageId}": ${pageErr.message}`,
+    };
+  }
+}

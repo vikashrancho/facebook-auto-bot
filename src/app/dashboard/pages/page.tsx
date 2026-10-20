@@ -34,6 +34,8 @@ export default function PagesPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [addPageIdInput, setAddPageIdInput] = useState("");
   const [addingPage, setAddingPage] = useState(false);
+  const [diagnostic, setDiagnostic] = useState<any | null>(null);
+  const [checkingDiagnostic, setCheckingDiagnostic] = useState(false);
 
   const load = useCallback(async (refresh: boolean) => {
     if (refresh) setRefreshing(true);
@@ -62,6 +64,23 @@ export default function PagesPage() {
   useEffect(() => {
     load(false);
   }, [load]);
+
+  async function runDiagnostic() {
+    setCheckingDiagnostic(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/facebook/diagnostics");
+      const data = await res.json();
+      setDiagnostic(data);
+    } catch (err: any) {
+      setDiagnostic({
+        connectionStatus: "page_error",
+        message: err.message || "Failed to run diagnostics.",
+      });
+    } finally {
+      setCheckingDiagnostic(false);
+    }
+  }
 
   async function handleAddPage(e: React.FormEvent) {
     e.preventDefault();
@@ -187,6 +206,10 @@ export default function PagesPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="secondary" onClick={runDiagnostic} disabled={checkingDiagnostic}>
+            <ShieldCheck size={14} className={checkingDiagnostic ? "animate-spin" : "text-emerald-500"} />
+            {checkingDiagnostic ? "Diagnosing…" : "Diagnose Tokens"}
+          </Button>
           <Button
             size="sm"
             variant={showAddForm ? "primary" : "secondary"}
@@ -206,6 +229,85 @@ export default function PagesPage() {
           </a>
         </div>
       </div>
+
+      {/* Connection Diagnostic Report Card */}
+      {diagnostic && (
+        <Card
+          className={`p-4 border animate-in fade-in ${
+            diagnostic.connectionStatus === "ready"
+              ? "border-emerald-500/30 bg-emerald-500/5"
+              : "border-amber-500/30 bg-amber-500/5"
+          }`}
+        >
+          <div className="flex items-start justify-between">
+            <div className="flex items-start gap-3">
+              {diagnostic.connectionStatus === "ready" ? (
+                <CheckCircle size={20} className="text-emerald-500 mt-0.5" />
+              ) : (
+                <WarningCircle size={20} className="text-amber-500 mt-0.5" />
+              )}
+              <div>
+                <h4 className="text-sm font-semibold text-foreground">
+                  Connection Diagnostics:{" "}
+                  {diagnostic.connectionStatus === "ready"
+                    ? "All Credentials Verified"
+                    : "Action Recommended"}
+                </h4>
+                <p className="mt-0.5 text-xs text-muted-foreground">{diagnostic.message}</p>
+                <div className="mt-2.5 flex flex-wrap gap-2 text-xs">
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full font-medium ${
+                      diagnostic.tokenValid
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-destructive/10 text-destructive"
+                    }`}
+                  >
+                    User Token: {diagnostic.tokenValid ? "Valid" : "Invalid/Expired"}
+                  </span>
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full font-medium ${
+                      diagnostic.pageTokenValid
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-destructive/10 text-destructive"
+                    }`}
+                  >
+                    Selected Page Token: {diagnostic.pageTokenValid ? "Valid" : "Invalid/Missing"}
+                  </span>
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full font-medium ${
+                      diagnostic.canPublish
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-destructive/10 text-destructive"
+                    }`}
+                  >
+                    Publishing Rights: {diagnostic.canPublish ? "Authorized" : "Not Authorized"}
+                  </span>
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-full font-medium ${
+                      diagnostic.requiredPermissionsPresent
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-amber-500/10 text-amber-600"
+                    }`}
+                  >
+                    Permissions:{" "}
+                    {diagnostic.requiredPermissionsPresent
+                      ? "Complete"
+                      : `Missing (${(diagnostic.missingPermissions || []).join(", ")})`}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDiagnostic(null)}
+              className="text-muted-foreground hover:text-foreground text-xs p-1"
+              aria-label="Dismiss diagnostic card"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
 
       {/* Add Missing Page by ID card */}
       {showAddForm && (

@@ -82,6 +82,7 @@ import type { Post } from "../src/lib/types";
 let totalTests = 0;
 let passedTests = 0;
 const createdPostIds: string[] = [];
+let initialSettings: any = null;
 
 async function cleanup() {
   try {
@@ -91,6 +92,13 @@ async function cleanup() {
       await db.from("posts").delete().in("id", createdPostIds);
     }
     await db.from("posts").delete().like("topic", "calendar_test_%");
+    if (initialSettings) {
+      await updateSettings({
+        default_page_id: initialSettings.default_page_id,
+        default_page_name: initialSettings.default_page_name,
+        default_page_token: initialSettings.default_page_token,
+      });
+    }
   } catch {}
 }
 
@@ -111,6 +119,8 @@ async function main() {
   console.log("=======================================================");
   console.log(" Content Calendar & Automatic Scheduling Test Suite");
   console.log("=======================================================\n");
+
+  initialSettings = await getSettings();
 
   try {
     // -------------------------------------------------------------
@@ -573,6 +583,15 @@ async function main() {
       }
       assert.strictEqual(blockedRetry, true, "Automatic retry must be blocked on uncertain outcomes");
     });
+
+    // Immediately restore initial production settings after mock publishing tests complete
+    if (initialSettings) {
+      await updateSettings({
+        default_page_id: initialSettings.default_page_id,
+        default_page_name: initialSettings.default_page_name,
+        default_page_token: initialSettings.default_page_token,
+      });
+    }
 
     // -------------------------------------------------------------
     // Suite 7: Scheduler Endpoint Security & CRON_SECRET Auth

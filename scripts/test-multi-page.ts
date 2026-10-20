@@ -446,6 +446,86 @@ async function run() {
       assert.ok(data.error?.includes("not connected, inactive, or unauthorized"));
     });
 
+    await test("createChatGPTPost resolves target page by exact/trimmed case-insensitive pageName", async () => {
+      // Default is test-page-111 ("Alpha Marketing Hub Test")
+      // We explicitly request pageName: "  tech innovation hub test  "
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": validApiKey,
+        },
+        body: JSON.stringify({
+          title: "Page Selection By Name",
+          description: "Testing page name resolution for non-default page",
+          imageUrl: hostedImageUrl,
+          pageName: "  tech innovation hub test  ",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 201);
+      const data = await res.json();
+      assert.strictEqual(data.pageName, "Tech Innovation Hub Test");
+
+      const { getPost, deletePostRecord } = await import("../src/lib/db/posts");
+      const post = await getPost(data.postId);
+      assert.strictEqual(post?.page_id, "test-page-222");
+      // clean up created post
+      await deletePostRecord(data.postId);
+    });
+
+    await test("createChatGPTPost rejects unknown requested pageName without falling back to default", async () => {
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": validApiKey,
+        },
+        body: JSON.stringify({
+          title: "Non Existent Page Post",
+          description: "This should fail and not fall back to default page",
+          imageUrl: hostedImageUrl,
+          pageName: "Non Existent Mystery Page",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 409);
+      const data = await res.json();
+      assert.strictEqual(data.code, "PAGE_NOT_FOUND");
+    });
+
+    await test("createChatGPTPost rejects ambiguous page names when duplicates exist", async () => {
+      // Temporarily insert a duplicate named page
+      await db.from("pages_cache").insert({
+        page_id: "test-page-duplicate-name",
+        name: "Tech Innovation Hub Test",
+        access_token: "mock-dup-token",
+        is_active: true,
+      });
+
+      try {
+        const req = new Request("http://localhost/api/chatgpt/posts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": validApiKey,
+          },
+          body: JSON.stringify({
+            title: "Ambiguous Post",
+            description: "Testing duplicate name rejection",
+            imageUrl: hostedImageUrl,
+            pageName: "Tech Innovation Hub Test",
+          }),
+        });
+        const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+        assert.strictEqual(res.status, 409);
+        const data = await res.json();
+        assert.strictEqual(data.code, "AMBIGUOUS_PAGE_NAME");
+      } finally {
+        await db.from("pages_cache").delete().eq("page_id", "test-page-duplicate-name");
+      }
+    });
+
     // -------------------------------------------------------------
     // Suite 6: Security & Content Hash Binding
     // -------------------------------------------------------------
@@ -474,6 +554,84 @@ async function run() {
         hash2,
         "Content hash MUST change when target page changes, preventing approval cross-replay!"
       );
+    });
+
+    await test("Approve and publish refuse publication when target Page mismatches caller expectation", async () => {
+      const { createPostRecord, deletePostRecord } = await import("../src/lib/db/posts");
+      const { computePostContentHash, issueApprovalToken } = await import("../src/lib/auth/integration");
+      const post = await createPostRecord({
+        topic: "Testing mismatch",
+        title: "Mismatch Title",
+        description: "Mismatch Description",
+        hashtags: [],
+        image_url: hostedImageUrl,
+        image_source: "ai",
+        link_url: null,
+        page_id: "test-page-222",
+        page_name: "Tech Innovation Hub Test",
+        scheduled_at: null,
+        status: "draft",
+      });
+
+      try {
+        const hash = computePostContentHash({
+          postId: post.id,
+          title: post.title,
+          description: post.description,
+          hashtags: post.hashtags,
+          imageUrl: post.image_url,
+          pageId: post.page_id!,
+        });
+
+        // 1. Approval with mismatched expectedPageId
+        const reqApproveMismatch = new Request(`http://localhost/api/chatgpt/posts/${post.id}/approve`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": validApiKey,
+          },
+          body: JSON.stringify({
+            userConfirmed: true,
+            contentHash: hash,
+            expectedPageId: "test-page-111", // Mismatch!
+          }),
+        });
+        const resApproveMismatch = await POST(reqApproveMismatch, {
+          params: Promise.resolve({ path: ["chatgpt", "posts", post.id, "approve"] }),
+        });
+        assert.strictEqual(resApproveMismatch.status, 409);
+        const dataApproveMismatch = await resApproveMismatch.json();
+        assert.strictEqual(dataApproveMismatch.code, "PAGE_MISMATCH");
+
+        // 2. Mint approval token matching actual page
+        const { token } = await issueApprovalToken({
+          postId: post.id,
+          contentHash: hash,
+          ttlSeconds: 600,
+        });
+
+        // 3. Publish with mismatched expectedPageName
+        const reqPublishMismatch = new Request(`http://localhost/api/chatgpt/posts/${post.id}/publish`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": validApiKey,
+          },
+          body: JSON.stringify({
+            approvalToken: token,
+            expectedPageName: "Loving Doggy", // Mismatch!
+            dryRun: true,
+          }),
+        });
+        const resPublishMismatch = await POST(reqPublishMismatch, {
+          params: Promise.resolve({ path: ["chatgpt", "posts", post.id, "publish"] }),
+        });
+        assert.strictEqual(resPublishMismatch.status, 409);
+        const dataPublishMismatch = await resPublishMismatch.json();
+        assert.strictEqual(dataPublishMismatch.code, "PAGE_MISMATCH");
+      } finally {
+        await deletePostRecord(post.id);
+      }
     });
   } finally {
     // -------------------------------------------------------------

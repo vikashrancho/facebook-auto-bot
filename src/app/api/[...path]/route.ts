@@ -69,6 +69,7 @@ import {
 import {
   listPages,
   getPageWithToken,
+  resolveTargetFacebookPage,
   upsertPages,
   disconnectPage,
   reconnectPage,
@@ -82,6 +83,7 @@ import {
   missingPermissions,
   revokeFacebookAccess,
   FacebookNotConnectedError,
+  diagnoseFacebookConnection,
 } from "@/lib/facebook/client";
 import {
   buildAuthorizeUrl,
@@ -295,6 +297,12 @@ export async function GET(req: Request, ctx: Ctx) {
       return getPages(url.searchParams.get("refresh") === "1");
     }
 
+    if (route === "facebook/diagnostics") {
+      const pageId = url.searchParams.get("pageId") || undefined;
+      const report = await diagnoseFacebookConnection(pageId);
+      return json(report);
+    }
+
     if (route === "chatgpt/connected-pages" || route === "chatgpt/pages") {
       const pages = await listPages({ includeInactive: false });
       const currentSettings = await getSettings();
@@ -306,7 +314,10 @@ export async function GET(req: Request, ctx: Ctx) {
           category: p.category,
           pictureUrl: p.picture_url ?? null,
           isDefault: Boolean(p.is_default),
+          isActive: Boolean(p.is_active),
+          status: p.is_active ? "connected" : "disconnected",
           canPublish: Boolean(p.can_post),
+          permissions: p.tasks ?? [],
         })),
         count: pages.length,
         defaultPageId: currentSettings.default_page_id,
@@ -723,6 +734,9 @@ const CreateChatGPTPostBody = z
     topic: z.string().trim().min(2).max(300).optional(),
     pageId: z.string().trim().min(1).max(100).optional(),
     targetPageId: z.string().trim().min(1).max(100).optional(),
+    pageName: z.string().trim().min(1).max(200).optional(),
+    targetPageName: z.string().trim().min(1).max(200).optional(),
+    page: z.string().trim().min(1).max(200).optional(),
   })
   .refine(
     (data) =>
@@ -739,12 +753,20 @@ const CreateChatGPTPostBody = z
 const ApproveChatGPTPostBody = z.object({
   userConfirmed: z.boolean(),
   contentHash: z.string().trim().min(1),
+  targetPageId: z.string().trim().min(1).max(100).optional(),
+  targetPageName: z.string().trim().min(1).max(200).optional(),
+  expectedPageId: z.string().trim().min(1).max(100).optional(),
+  expectedPageName: z.string().trim().min(1).max(200).optional(),
 });
 
 const PublishChatGPTPostBody = z.object({
   approvalToken: z.string().trim().min(10),
   dryRun: z.boolean().optional(),
   forceRetry: z.boolean().optional(),
+  targetPageId: z.string().trim().min(1).max(100).optional(),
+  targetPageName: z.string().trim().min(1).max(200).optional(),
+  expectedPageId: z.string().trim().min(1).max(100).optional(),
+  expectedPageName: z.string().trim().min(1).max(200).optional(),
 });
 
 // In-flight concurrency lock to serialize concurrent creation requests using the same idempotency key
@@ -835,13 +857,25 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ error: parsed.error.issues[0]?.message ?? "Invalid content request." }, 400);
       }
       try {
-        const settings = await getSettings();
-        const pageId = parsed.data.targetPageId || settings.default_page_id || null;
-        let pageName = parsed.data.targetPageName || null;
-        if (pageId && !pageName) {
-          const pRecord = await getPageWithToken(pageId);
-          pageName = pRecord?.name || (pageId === settings.default_page_id ? settings.default_page_name : null) || null;
+        const targetResolution = await resolveTargetFacebookPage({
+          pageId: parsed.data.targetPageId,
+          pageName: parsed.data.targetPageName,
+          allowDefault: !(parsed.data.targetPageId || parsed.data.targetPageName),
+        });
+
+        if (!targetResolution.page) {
+          return json(
+            {
+              error: targetResolution.message || "Failed to resolve destination Facebook Page.",
+              code: targetResolution.error,
+              availablePages: targetResolution.availablePages,
+            },
+            400
+          );
         }
+
+        const pageId = targetResolution.page.page_id;
+        const pageName = targetResolution.page.name;
 
         const record = await createContentRequestRecord({
           topic: parsed.data.topic,
@@ -1312,37 +1346,33 @@ export async function POST(req: Request, ctx: Ctx) {
         }
 
         // Resolve destination Facebook Page:
-        // Priority 1: explicitly passed pageId or targetPageId
-        // Priority 2: target_page_id from linked content request
-        // Priority 3: configured default_page_id
-        const destinationPageId =
-          b.pageId || b.targetPageId || linkedRequest?.target_page_id || settings.default_page_id;
+        // Priority 1: explicitly passed pageId / targetPageId / pageName / targetPageName / page
+        // Priority 2: target_page_id / target_page_name from linked content request
+        // Priority 3: configured default_page_id ONLY if no explicit page was requested
+        const requestedId = b.pageId || b.targetPageId || linkedRequest?.target_page_id;
+        const requestedName = b.pageName || b.targetPageName || b.page || linkedRequest?.target_page_name;
+        const hasExplicitRequest = Boolean(requestedId || requestedName);
 
-        if (!destinationPageId) {
+        const pageResolution = await resolveTargetFacebookPage({
+          pageId: requestedId,
+          pageName: requestedName,
+          allowDefault: !hasExplicitRequest,
+        });
+
+        if (!pageResolution.page) {
           return {
             status: 409,
             body: {
-              error:
-                "No destination Facebook Page was specified and no default Page is configured. Please pass 'pageId' or configure a default Page in Settings.",
+              error: pageResolution.message || "Unable to resolve target Facebook Page.",
+              code: pageResolution.error,
+              availablePages: pageResolution.availablePages,
             },
           };
         }
 
-        const targetPage = await getPageWithToken(destinationPageId);
-        if (!targetPage || targetPage.is_active === false) {
-          return {
-            status: 409,
-            body: {
-              error: `Destination Facebook Page with ID '${destinationPageId}' is not connected, inactive, or unauthorized. Call getConnectedFacebookPages to see available Pages.`,
-            },
-          };
-        }
-
-        const destinationPageName =
-          targetPage.name ||
-          linkedRequest?.target_page_name ||
-          (destinationPageId === settings.default_page_id ? settings.default_page_name : null) ||
-          "Facebook Page";
+        const targetPage = pageResolution.page;
+        const destinationPageId = targetPage.page_id;
+        const destinationPageName = targetPage.name || "Facebook Page";
 
         let ingested: { url: string; source: ImageSource; sha256?: string };
         try {
@@ -1544,6 +1574,28 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ error: "Destination Facebook Page is not configured." }, 409);
       }
 
+      // Safeguard: If the caller passed expected/target Page ID or Page Name, verify it matches the staged post's target Page
+      const expectedId = parsed.data.expectedPageId || parsed.data.targetPageId;
+      const expectedName = parsed.data.expectedPageName || parsed.data.targetPageName;
+      if (expectedId && expectedId !== pageId) {
+        return json(
+          {
+            error: `Target Page ID mismatch: staged post is assigned to Page ID '${pageId}' ('${post.page_name || "Unknown"}'), but approval specified '${expectedId}'.`,
+            code: "PAGE_MISMATCH",
+          },
+          409
+        );
+      }
+      if (expectedName && post.page_name && expectedName.trim().toLowerCase() !== post.page_name.trim().toLowerCase()) {
+        return json(
+          {
+            error: `Target Page Name mismatch: staged post is assigned to '${post.page_name}', but approval specified '${expectedName}'.`,
+            code: "PAGE_MISMATCH",
+          },
+          409
+        );
+      }
+
       const currentHash = computePostContentHash({
         postId: post.id,
         title: post.title,
@@ -1640,6 +1692,29 @@ export async function POST(req: Request, ctx: Ctx) {
 
       const settings = await getSettings();
       const pageId = post.page_id || settings.default_page_id;
+
+      // Safeguard: verify target Page matches caller expectation if specified
+      const expectedId = parsed.data.expectedPageId || parsed.data.targetPageId;
+      const expectedName = parsed.data.expectedPageName || parsed.data.targetPageName;
+      if (expectedId && expectedId !== pageId) {
+        return json(
+          {
+            error: `Target Page ID mismatch: staged post is assigned to Page ID '${pageId}' ('${post.page_name || "Unknown"}'), but publishing specified '${expectedId}'.`,
+            code: "PAGE_MISMATCH",
+          },
+          409
+        );
+      }
+      if (expectedName && post.page_name && expectedName.trim().toLowerCase() !== post.page_name.trim().toLowerCase()) {
+        return json(
+          {
+            error: `Target Page Name mismatch: staged post is assigned to '${post.page_name}', but publishing specified '${expectedName}'.`,
+            code: "PAGE_MISMATCH",
+          },
+          409
+        );
+      }
+
       const targetPage = pageId ? await getPageWithToken(pageId) : null;
       const pageToken =
         targetPage?.access_token ||

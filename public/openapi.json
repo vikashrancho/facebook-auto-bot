@@ -858,13 +858,28 @@
           },
           "pageId": {
             "type": "string",
-            "description": "Optional destination Facebook Page ID. If omitted, uses targetPageId from linked request or default Page.",
+            "description": "Optional destination Facebook Page ID. If specified, the post will be staged specifically for this Facebook Page. Call getConnectedFacebookPages to find valid IDs.",
             "example": "100000000000001"
           },
           "targetPageId": {
             "type": "string",
             "description": "Alias for pageId.",
             "example": "100000000000001"
+          },
+          "pageName": {
+            "type": "string",
+            "description": "Optional destination Facebook Page name (e.g. 'Sample Niche Page'). Case-insensitive exact match against connected active Pages. If provided and not matched, rejects rather than falling back to default.",
+            "example": "Sample Niche Page"
+          },
+          "targetPageName": {
+            "type": "string",
+            "description": "Alias for pageName.",
+            "example": "Sample Niche Page"
+          },
+          "page": {
+            "type": "string",
+            "description": "Alias for pageName or pageId.",
+            "example": "Sample Niche Page"
           }
         }
       },
@@ -963,6 +978,16 @@
             "type": "string",
             "description": "The exact contentHash returned when the post was staged.",
             "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "expectedPageId": {
+            "type": "string",
+            "description": "Optional Page ID to verify against the staged post's target Page. Rejects with 409 if post was staged for a different Page.",
+            "example": "100000000000001"
+          },
+          "expectedPageName": {
+            "type": "string",
+            "description": "Optional Page Name to verify against the staged post's target Page Name. Rejects with 409 if post was staged for a different Page.",
+            "example": "Sample Facebook Page"
           }
         }
       },
@@ -1023,6 +1048,16 @@
             "type": "boolean",
             "description": "Set to true only after human inspection confirms that a post previously failing with an [UNCERTAIN_OUTCOME] does not exist on Facebook.",
             "example": false
+          },
+          "expectedPageId": {
+            "type": "string",
+            "description": "Optional Page ID to verify against the staged post's target Page before publishing. Rejects with 409 if post was staged for a different Page.",
+            "example": "100000000000001"
+          },
+          "expectedPageName": {
+            "type": "string",
+            "description": "Optional Page Name to verify against the staged post's target Page Name before publishing. Rejects with 409 if post was staged for a different Page.",
+            "example": "Sample Facebook Page"
           }
         }
       },

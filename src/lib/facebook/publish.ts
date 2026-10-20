@@ -92,6 +92,21 @@ export async function publishPostNow(
     });
   }
 
+  // Validate token format for live publication to prevent sending mock or corrupted tokens to Meta
+  if (
+    !options.publisher &&
+    (pageToken.startsWith("mock_") || pageToken.startsWith("test_") || pageToken.length < 30)
+  ) {
+    const errorMsg = `[INVALID_TOKEN] Destination Facebook Page (${post.page_name || pageId}) has a mock or malformed access token. Please select and verify a legitimate connected Page on the Pages screen.`;
+    if (options.dryRun) {
+      throw new Error(`Dry-run validation failed: ${errorMsg}`);
+    }
+    return updatePostRecord(postId, {
+      status: "failed",
+      error_message: errorMsg,
+    });
+  }
+
   if (!post.image_url) {
     const errorMsg = "Post does not have a valid image URL.";
     if (options.dryRun) {
@@ -160,6 +175,16 @@ export async function publishPostNow(
         "pages_manage_posts. Add it to your Meta app — and to the Login for Business " +
         "configuration if you use one — then disconnect and connect again so a new " +
         "token is issued.";
+    }
+
+    // Invalid OAuth token guidance
+    if (
+      /Invalid OAuth access token|error validating access token|\(#190\)|session has expired/i.test(
+        errorMessage
+      )
+    ) {
+      errorMessage =
+        "[INVALID_OAUTH_TOKEN] Facebook rejected the publishing request because the Page or User access token is invalid, expired, or revoked (Meta OAuth Error 190). Please re-authenticate your Facebook account or reconnect this Page on the Pages screen.";
     }
 
     // Uncertain timeout classification to prevent accidental duplicate publishing
