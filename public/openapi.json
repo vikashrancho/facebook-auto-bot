@@ -892,6 +892,7 @@
           "description",
           "hashtags",
           "imageUrl",
+          "pageId",
           "pageName",
           "contentHash",
           "reviewUrl",
@@ -940,10 +941,15 @@
             "description": "Permanent Supabase Storage URL hosting the ingested image.",
             "example": "https://xyz.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-16/uuid.png"
           },
+          "pageId": {
+            "type": "string",
+            "description": "Authoritative Facebook Page ID where the draft is staged.",
+            "example": "100000000000001"
+          },
           "pageName": {
             "type": "string",
             "description": "Name of the target Facebook Page where content will be published.",
-            "example": "My Tech Brand"
+            "example": "Sample Facebook Page"
           },
           "contentHash": {
             "type": "string",

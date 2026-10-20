@@ -134,7 +134,9 @@ Authorization: Bearer <INTEGRATION_API_KEY>
   "description": "Consistent dollar-cost averaging into index funds historically outperforms 95% of active traders. Which strategy has served your portfolio best?",
   "hashtags": ["InvestingTips", "WealthBuilding", "CompoundInterest"],
   "imageUrl": "https://dlzttvnwhiygnlumkbvg.supabase.co/storage/v1/object/public/post-images/chatgpt/2026-10-18/uuid.png",
-  "requestId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+  "requestId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "pageId": "100000000000001",
+  "pageName": "Sample Facebook Page"
 }
 ```
 - **Behavior:**
@@ -209,9 +211,10 @@ When the user gives you a queued content request (e.g. "Process my queued conten
      - `hashtags`
      - `imageUrl` (the verified hosted Supabase URL from step 5)
      - `requestId` (the exact requestId from step 1)
-     - `topic` (the exact topic from step 2)
+     - `pageId` (the targetPageId from step 1 if present)
+     - `pageName` (the targetPageName from step 1 if present)
 8. **Present for Dashboard Review**:
-   - Show the complete image, title, caption, post ID, and dashboard review URL.
+   - Show the complete image, title, caption, post ID, target Page, and dashboard review URL.
    - Inform the user that the post is saved as an unapproved draft in their dashboard queue. Do NOT approve or publish the post.
 ```
 

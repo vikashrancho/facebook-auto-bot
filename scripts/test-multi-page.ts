@@ -633,6 +633,56 @@ async function run() {
         await deletePostRecord(post.id);
       }
     });
+
+    await test("Request targeting 'Live Jesus Christ' creates draft for that exact Page even if default is Page B", async () => {
+      // In the real test database, "Live Jesus Christ" has page_id "106882792429612".
+      // Test page selection by exact name "Live Jesus Christ".
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": validApiKey,
+        },
+        body: JSON.stringify({
+          title: "Who Is Jesus? Discover the Love That Changes Everything",
+          description: "Who is Jesus? He came to show us God's love and offer hope.",
+          imageUrl: hostedImageUrl,
+          pageName: "Live Jesus Christ",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 201);
+      const data = await res.json();
+      assert.strictEqual(data.pageName, "Live Jesus Christ");
+      assert.strictEqual(data.pageId, "106882792429612");
+
+      const { getPost, deletePostRecord } = await import("../src/lib/db/posts");
+      const post = await getPost(data.postId);
+      assert.strictEqual(post?.page_id, "106882792429612");
+      assert.strictEqual(post?.page_name, "Live Jesus Christ");
+      await deletePostRecord(data.postId);
+    });
+
+    await test("createChatGPTPost rejects with TARGET_PAGE_MISMATCH when destination conflict occurs", async () => {
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": validApiKey,
+        },
+        body: JSON.stringify({
+          title: "Conflicting Target Post",
+          description: "Testing target consistency check",
+          imageUrl: hostedImageUrl,
+          pageId: "test-page-111",
+          pageName: "Tech Innovation Hub Test", // Mismatched Page name for Page ID 111!
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 409);
+      const data = await res.json();
+      assert.strictEqual(data.code, "TARGET_PAGE_MISMATCH");
+    });
   } finally {
     // -------------------------------------------------------------
     // Safe Cleanup: Restore initial settings & delete test rows

@@ -622,8 +622,8 @@ const CreatePostBody = z.object({
   imageUrl: z.string().url(),
   imageSource: z.enum(["ai", "stock"]),
   linkUrl: z.string().url().optional().or(z.literal("")),
-  pageId: z.string().min(1),
-  pageName: z.string().min(1),
+  pageId: z.string().optional(),
+  pageName: z.string().optional(),
   action: z.enum(["draft", "schedule", "post_now"]),
   scheduledAt: z.string().datetime().optional(),
 });
@@ -823,13 +823,25 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ error: "scheduledAt is required to schedule a post." }, 400);
       }
 
-      const settings = await getSettings();
-      const pageId = b.pageId || settings.default_page_id || null;
-      let pageName = b.pageName || null;
-      if (pageId && !pageName) {
-        const pRecord = await getPageWithToken(pageId);
-        pageName = pRecord?.name || (pageId === settings.default_page_id ? settings.default_page_name : null) || "Facebook Page";
+      const pageResolution = await resolveTargetFacebookPage({
+        pageId: b.pageId,
+        pageName: b.pageName,
+        allowDefault: !(b.pageId || b.pageName),
+      });
+
+      if (!pageResolution.page) {
+        return json(
+          {
+            error: pageResolution.message || "Failed to resolve destination Facebook Page.",
+            code: pageResolution.error,
+            availablePages: pageResolution.availablePages,
+          },
+          400
+        );
       }
+
+      const pageId = pageResolution.page.page_id;
+      const pageName = pageResolution.page.name;
 
       const post = await createPostRecord({
         topic: b.topic,
@@ -1271,6 +1283,27 @@ export async function POST(req: Request, ctx: Ctx) {
           if (linkedRequest.status === "draft_created" && linkedRequest.post_id) {
             const existingPost = await getPost(linkedRequest.post_id);
             if (existingPost) {
+              const requestedId = b.pageId || b.targetPageId;
+              const requestedName = b.pageName || b.targetPageName || b.page;
+              if (requestedId && existingPost.page_id && existingPost.page_id !== requestedId) {
+                return {
+                  status: 409,
+                  body: {
+                    error: `TARGET_PAGE_MISMATCH: Existing draft for content request '${b.requestId}' was staged for Page ID '${existingPost.page_id}', but this request specified '${requestedId}'.`,
+                    code: "TARGET_PAGE_MISMATCH",
+                  },
+                };
+              }
+              if (requestedName && existingPost.page_name && existingPost.page_name.trim().toLowerCase() !== requestedName.trim().toLowerCase()) {
+                return {
+                  status: 409,
+                  body: {
+                    error: `TARGET_PAGE_MISMATCH: Existing draft for content request '${b.requestId}' was staged for '${existingPost.page_name}', but this request specified '${requestedName}'.`,
+                    code: "TARGET_PAGE_MISMATCH",
+                  },
+                };
+              }
+
               const contentHash = computePostContentHash({
                 postId: existingPost.id,
                 title: existingPost.title,
@@ -1292,6 +1325,7 @@ export async function POST(req: Request, ctx: Ctx) {
                   description: existingPost.description,
                   hashtags: existingPost.hashtags,
                   imageUrl: existingPost.image_url,
+                  pageId: existingPost.page_id,
                   pageName: existingPost.page_name,
                   contentHash,
                   reviewUrl: linkedRequest.review_url || `/dashboard/queue?post=${existingPost.id}`,
@@ -1313,6 +1347,28 @@ export async function POST(req: Request, ctx: Ctx) {
             .maybeSingle();
 
           if (existing) {
+            // Verify that the existing post's page matches the caller's requested page
+            const requestedId = b.pageId || b.targetPageId;
+            const requestedName = b.pageName || b.targetPageName || b.page;
+            if (requestedId && existing.page_id && existing.page_id !== requestedId) {
+              return {
+                status: 409,
+                body: {
+                  error: `TARGET_PAGE_MISMATCH: Existing draft for idempotencyKey '${b.idempotencyKey}' was staged for Page ID '${existing.page_id}', but this request specified '${requestedId}'.`,
+                  code: "TARGET_PAGE_MISMATCH",
+                },
+              };
+            }
+            if (requestedName && existing.page_name && existing.page_name.trim().toLowerCase() !== requestedName.trim().toLowerCase()) {
+              return {
+                status: 409,
+                body: {
+                  error: `TARGET_PAGE_MISMATCH: Existing draft for idempotencyKey '${b.idempotencyKey}' was staged for '${existing.page_name}', but this request specified '${requestedName}'.`,
+                  code: "TARGET_PAGE_MISMATCH",
+                },
+              };
+            }
+
             const contentHash = computePostContentHash({
               postId: existing.id,
               title: existing.title,
@@ -1333,6 +1389,7 @@ export async function POST(req: Request, ctx: Ctx) {
                 description: existing.description,
                 hashtags: existing.hashtags,
                 imageUrl: existing.image_url,
+                pageId: existing.page_id,
                 pageName: existing.page_name,
                 contentHash,
                 reviewUrl: `/dashboard/queue?post=${existing.id}`,
@@ -1403,6 +1460,29 @@ export async function POST(req: Request, ctx: Ctx) {
 
         try {
           const postTopic = linkedRequest?.topic || b.topic || (b.idempotencyKey ? `chatgpt:${b.idempotencyKey}` : (b.requestId ? `chatgpt:req:${b.requestId}` : "chatgpt"));
+
+          // Destination consistency assertion: ensure target Page matches caller intent
+          if (requestedId && targetPage.page_id !== requestedId) {
+            return {
+              status: 409,
+              body: {
+                error: `TARGET_PAGE_MISMATCH: Resolved Page ID '${targetPage.page_id}' does not match requested Page ID '${requestedId}'.`,
+                code: "TARGET_PAGE_MISMATCH",
+                availablePages: pageResolution.availablePages,
+              },
+            };
+          }
+          if (requestedName && targetPage.name.trim().toLowerCase() !== requestedName.trim().toLowerCase()) {
+            return {
+              status: 409,
+              body: {
+                error: `TARGET_PAGE_MISMATCH: Resolved Page '${targetPage.name}' does not match requested Page '${requestedName}'.`,
+                code: "TARGET_PAGE_MISMATCH",
+                availablePages: pageResolution.availablePages,
+              },
+            };
+          }
+
           const post = await createPostRecord({
             topic: postTopic,
             title: b.title,
@@ -1494,6 +1574,7 @@ export async function POST(req: Request, ctx: Ctx) {
                   description: existingAfterConflict.description,
                   hashtags: existingAfterConflict.hashtags,
                   imageUrl: existingAfterConflict.image_url,
+                  pageId: existingAfterConflict.page_id,
                   pageName: existingAfterConflict.page_name,
                   contentHash,
                   reviewUrl: `/dashboard/queue?post=${existingAfterConflict.id}`,
