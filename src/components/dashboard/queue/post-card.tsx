@@ -98,12 +98,24 @@ export function PostCard({
             ) : null}
 
             {/* Target Page Badge */}
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2/70 px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-              <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#1877F2] text-[8px] font-bold text-white">
-                f
+            {post.page_id ? (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2/70 px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+                title={`Target Page: ${post.page_name || "Unknown"} (ID: ${post.page_id})`}
+              >
+                <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[#1877F2] text-[8px] font-bold text-white">
+                  f
+                </span>
+                <span className="truncate max-w-[150px]">{post.page_name || "Facebook Page"}</span>
               </span>
-              <span className="truncate max-w-[150px]">{post.page_name || "Facebook Page"}</span>
-            </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-400"
+                title="No destination Facebook Page assigned. Explicit selection required before publishing."
+              >
+                <WarningCircle size={13} weight="bold" /> Unassigned Page
+              </span>
+            )}
 
             {/* Date / Schedule Badge */}
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">

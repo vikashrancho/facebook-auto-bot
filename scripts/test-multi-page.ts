@@ -146,6 +146,7 @@ async function run() {
 
   let createdPostId: string | null = null;
   let createdRequestId: string | null = null;
+  let createdScenarioPostIds: string[] = [];
 
   try {
     // -------------------------------------------------------------
@@ -683,6 +684,328 @@ async function run() {
       const data = await res.json();
       assert.strictEqual(data.code, "TARGET_PAGE_MISMATCH");
     });
+
+    // -------------------------------------------------------------
+    // Suite 7: Master Prompt Acceptance Scenarios A through L
+    // -------------------------------------------------------------
+    console.log("\n--- Suite 7: Master Prompt Acceptance Scenarios A through L ---");
+
+    const livePages = [
+      {
+        id: "111439634371975",
+        page_id: "111439634371975",
+        name: "Invest In Stock Market",
+        category: "Investing",
+        access_token: "EAAB_INVEST_IN_STOCK_MARKET_TEST_TOKEN_LONG_ENOUGH_12345",
+        is_active: true,
+      },
+      {
+        id: "106882792429612",
+        page_id: "106882792429612",
+        name: "Live Jesus Christ",
+        category: "Religious Organization",
+        access_token: "EAAB_LIVE_JESUS_CHRIST_TEST_TOKEN_LONG_ENOUGH_12345",
+        is_active: true,
+      },
+      {
+        id: "286923627847340",
+        page_id: "286923627847340",
+        name: "loving doggy ",
+        category: "Pets",
+        access_token: "EAAB_LOVING_DOGGY_TEST_TOKEN_LONG_ENOUGH_12345",
+        is_active: true,
+      },
+    ];
+    await upsertPages(livePages);
+
+    // Test A: Correct Page selection (Invest in Stock Market)
+    await test("Scenario A: Stock-market post for 'Invest in Stock Market' targets Page 111439634371975", async () => {
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+        body: JSON.stringify({
+          title: "S&P 500 Market Close Analysis",
+          description: "Markets rallied today led by semiconductors and large-cap tech. How did your portfolio perform?",
+          imageUrl: hostedImageUrl,
+          pageName: "Invest in Stock Market",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 201);
+      const data = await res.json();
+      assert.strictEqual(data.pageId, "111439634371975");
+      createdScenarioPostIds.push(data.postId);
+    });
+
+    // Test B: Different content, different Page (Live Jesus Christ)
+    await test("Scenario B: Devotional post for 'Live Jesus Christ' targets Page 106882792429612 independently", async () => {
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+        body: JSON.stringify({
+          title: "Grace and Peace for Your Day",
+          description: "May your heart be filled with faith and peace as you walk through today's challenges.",
+          imageUrl: hostedImageUrl,
+          pageName: "Live Jesus Christ",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 201);
+      const data = await res.json();
+      assert.strictEqual(data.pageId, "106882792429612");
+      createdScenarioPostIds.push(data.postId);
+    });
+
+    // Test C: Animal-related post ('Loving Doggie' matching 'loving doggy ')
+    await test("Scenario C: Animal post for 'Loving Doggie' matches Page 286923627847340 with phonetic/whitespace tolerance", async () => {
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+        body: JSON.stringify({
+          title: "Golden Retriever Daily Joy",
+          description: "Nothing beats the pure happiness of a wagging tail welcoming you home! Share your pup's photo below.",
+          imageUrl: hostedImageUrl,
+          pageName: "Loving Doggie",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 201);
+      const data = await res.json();
+      assert.strictEqual(data.pageId, "286923627847340");
+      createdScenarioPostIds.push(data.postId);
+    });
+
+    // Test D: Multiple drafts retain their own destinations regardless of creation order
+    let draftStockId = "";
+    let draftJesusId = "";
+    let draftDoggieId = "";
+    await test("Scenario D: Multiple drafts retain independent destinations simultaneously", async () => {
+      const createDraft = async (name: string, title: string) => {
+        const req = new Request("http://localhost/api/chatgpt/posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+          body: JSON.stringify({ title, description: "Test description", imageUrl: hostedImageUrl, pageName: name }),
+        });
+        const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+        const d = await res.json();
+        createdScenarioPostIds.push(d.postId);
+        return d;
+      };
+
+      const stockDraft = await createDraft("Invest in Stock Market", "Draft Stock 1");
+      const jesusDraft = await createDraft("Live Jesus Christ", "Draft Jesus 1");
+      const doggieDraft = await createDraft("Loving Doggie", "Draft Doggie 1");
+
+      draftStockId = stockDraft.postId;
+      draftJesusId = jesusDraft.postId;
+      draftDoggieId = doggieDraft.postId;
+
+      const { getPost } = await import("../src/lib/db/posts");
+      const p1 = await getPost(draftStockId);
+      const p2 = await getPost(draftJesusId);
+      const p3 = await getPost(draftDoggieId);
+
+      assert.strictEqual(p1?.page_id, "111439634371975");
+      assert.strictEqual(p2?.page_id, "106882792429612");
+      assert.strictEqual(p3?.page_id, "286923627847340");
+    });
+
+    // Test E: Default Page changes do NOT redirect existing drafts
+    await test("Scenario E: Changing default Page leaves existing drafts targeting their assigned Pages", async () => {
+      await updateSettings({ default_page_id: "106882792429612", default_page_name: "Live Jesus Christ" });
+      const { getPost } = await import("../src/lib/db/posts");
+      const p = await getPost(draftStockId);
+      assert.strictEqual(p?.page_id, "111439634371975", "Existing draft MUST NOT change target page when default page changes!");
+    });
+
+    // Test F: Disconnected/unknown destination fails safely without fallback
+    await test("Scenario F: Disconnected/unknown destination rejects without falling back to default Page", async () => {
+      const req = new Request("http://localhost/api/chatgpt/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+        body: JSON.stringify({
+          title: "Unknown Page Post",
+          description: "Should fail safely",
+          imageUrl: hostedImageUrl,
+          pageName: "Non Connected Facebook Page XYZ",
+        }),
+      });
+      const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+      assert.strictEqual(res.status, 409);
+      const data = await res.json();
+      assert.strictEqual(data.code, "PAGE_NOT_FOUND");
+    });
+
+    // Test G: Ambiguous Page names trigger clarification error
+    await test("Scenario G: Ambiguous Page names stop and report AMBIGUOUS_PAGE_NAME", async () => {
+      await db.from("pages_cache").insert({
+        page_id: "test-page-dup-loving",
+        name: "Loving Doggie",
+        access_token: "mock-token",
+        is_active: true,
+      });
+
+      try {
+        const req = new Request("http://localhost/api/chatgpt/posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+          body: JSON.stringify({
+            title: "Ambiguous Dog Post",
+            description: "Should fail",
+            imageUrl: hostedImageUrl,
+            pageName: "Loving Doggie",
+          }),
+        });
+        const res = await POST(req, { params: Promise.resolve({ path: ["chatgpt", "posts"] }) });
+        assert.strictEqual(res.status, 409);
+        const data = await res.json();
+        assert.strictEqual(data.code, "AMBIGUOUS_PAGE_NAME");
+      } finally {
+        await db.from("pages_cache").delete().eq("page_id", "test-page-dup-loving");
+      }
+    });
+
+    // Test H: Publication destination uses Loving Doggie's stored Page ID and authorized credentials
+    await test("Scenario H: Approving and publishing Loving Doggie draft uses its stored credentials", async () => {
+      const { getPost } = await import("../src/lib/db/posts");
+      const post = await getPost(draftDoggieId);
+      assert.ok(post);
+
+      const hash = computePostContentHash({
+        postId: post.id,
+        title: post.title,
+        description: post.description,
+        hashtags: post.hashtags,
+        imageUrl: post.image_url,
+        pageId: post.page_id!,
+      });
+
+      // Approve
+      const reqApprove = new Request(`http://localhost/api/chatgpt/posts/${post.id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+        body: JSON.stringify({ userConfirmed: true, contentHash: hash }),
+      });
+      const resApprove = await POST(reqApprove, {
+        params: Promise.resolve({ path: ["chatgpt", "posts", post.id, "approve"] }),
+      });
+      assert.strictEqual(resApprove.status, 200);
+      const approveData = await resApprove.json();
+
+      // Publish dryRun
+      const reqPublish = new Request(`http://localhost/api/chatgpt/posts/${post.id}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+        body: JSON.stringify({ approvalToken: approveData.approvalToken, dryRun: true }),
+      });
+      const resPublish = await POST(reqPublish, {
+        params: Promise.resolve({ path: ["chatgpt", "posts", post.id, "publish"] }),
+      });
+      assert.strictEqual(resPublish.status, 200);
+      const publishData = await resPublish.json();
+      assert.strictEqual(publishData.pageId, "286923627847340");
+    });
+
+    // Test I: Tampering destination invalidates approval
+    await test("Scenario I: Changing post destination invalidates prior approval", async () => {
+      const { reassignPostDestination, getPost } = await import("../src/lib/db/posts");
+      const postBefore = await getPost(draftDoggieId);
+      assert.strictEqual(postBefore?.approved_by_user, true);
+
+      // Reassign to Live Jesus Christ
+      await reassignPostDestination(draftDoggieId, "106882792429612");
+      const postAfter = await getPost(draftDoggieId);
+      assert.strictEqual(postAfter?.page_id, "106882792429612");
+      assert.strictEqual(postAfter?.approved_by_user, false, "Approval MUST be revoked on destination change!");
+      assert.strictEqual(postAfter?.approval_content_hash, null);
+    });
+
+    // Test J: Duplicate publication rejection
+    await test("Scenario J: Duplicate publication attempt on already published post is rejected", async () => {
+      const { updatePostRecord } = await import("../src/lib/db/posts");
+      await updatePostRecord(draftStockId, { status: "posted", facebook_post_id: "111439634371975_9876543210" });
+
+      const req = new Request(`http://localhost/api/posts/${draftStockId}/post-now`, {
+        method: "POST",
+        headers: { cookie: sessionCookieHeader },
+      });
+      const res = await POST(req, {
+        params: Promise.resolve({ path: ["posts", draftStockId, "post-now"] }),
+      });
+      assert.strictEqual(res.status, 400);
+      const data = await res.json();
+      assert.ok(data.error?.includes("already been posted"));
+    });
+
+    // Test K: Concurrent requests do not leak destination
+    await test("Scenario K: Concurrent requests for different Pages preserve strict isolation", async () => {
+      const [resA, resB] = await Promise.all([
+        POST(
+          new Request("http://localhost/api/chatgpt/posts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+            body: JSON.stringify({
+              title: "Concurrent Post A",
+              description: "Desc A",
+              imageUrl: hostedImageUrl,
+              pageName: "Invest in Stock Market",
+            }),
+          }),
+          { params: Promise.resolve({ path: ["chatgpt", "posts"] }) }
+        ),
+        POST(
+          new Request("http://localhost/api/chatgpt/posts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": validApiKey },
+            body: JSON.stringify({
+              title: "Concurrent Post B",
+              description: "Desc B",
+              imageUrl: hostedImageUrl,
+              pageName: "Live Jesus Christ",
+            }),
+          }),
+          { params: Promise.resolve({ path: ["chatgpt", "posts"] }) }
+        ),
+      ]);
+
+      const dataA = await resA.json();
+      const dataB = await resB.json();
+      createdScenarioPostIds.push(dataA.postId, dataB.postId);
+
+      assert.strictEqual(dataA.pageId, "111439634371975");
+      assert.strictEqual(dataB.pageId, "106882792429612");
+    });
+
+    // Test L: Safe migration preserves unassigned drafts with manual review flag
+    await test("Scenario L: Draft with null page_id is flagged and blocked from silent publication", async () => {
+      const { createPostRecord } = await import("../src/lib/db/posts");
+      const unassignedDraft = await createPostRecord({
+        topic: "Legacy Post Without Page",
+        title: "Legacy Post",
+        description: "Legacy unassigned description",
+        hashtags: [],
+        image_url: hostedImageUrl,
+        image_source: "ai",
+        link_url: null,
+        page_id: null,
+        page_name: null,
+        scheduled_at: null,
+        status: "draft",
+      });
+      createdScenarioPostIds.push(unassignedDraft.id);
+
+      // Verify publishing is rejected because destination page is null (never silently falling back to default)
+      const req = new Request(`http://localhost/api/posts/${unassignedDraft.id}/post-now`, {
+        method: "POST",
+        headers: { cookie: sessionCookieHeader },
+      });
+      const res = await POST(req, {
+        params: Promise.resolve({ path: ["posts", unassignedDraft.id, "post-now"] }),
+      });
+      assert.strictEqual(res.status, 409);
+      const data = await res.json();
+      assert.ok(data.error?.includes("Destination Facebook Page is not assigned"));
+    });
   } finally {
     // -------------------------------------------------------------
     // Safe Cleanup: Restore initial settings & delete test rows
@@ -702,6 +1025,9 @@ async function run() {
       }
       if (createdRequestId) {
         await db.from("content_requests").delete().eq("id", createdRequestId);
+      }
+      if (createdScenarioPostIds && createdScenarioPostIds.length > 0) {
+        await db.from("posts").delete().in("id", createdScenarioPostIds);
       }
     } catch {
       // Non-fatal cleanup

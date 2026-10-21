@@ -119,3 +119,53 @@ export async function listCalendarPosts(opts: {
   if (error) throw new Error(`Failed to list calendar posts: ${error.message}`);
   return (data ?? []) as Post[];
 }
+
+/**
+ * Explicit destination-change action: Safely reassigns an unpublished draft to a new Facebook Page.
+ * Validates target Page authorization and strictly invalidates prior approval to ensure
+ * human confirmation is re-obtained before publishing.
+ */
+export async function reassignPostDestination(
+  postId: string,
+  targetPageId: string
+): Promise<{ ok: boolean; post?: Post; error?: string }> {
+  const post = await getPost(postId);
+  if (!post) return { ok: false, error: "Post not found." };
+  if (post.status === "posted") {
+    return { ok: false, error: "Cannot change the destination Page of an already published post." };
+  }
+  if (post.status === "publishing") {
+    return { ok: false, error: "Cannot change destination while post is actively publishing." };
+  }
+
+  // Look up target page
+  const db = supabaseAdmin();
+  const { data: pageRow } = await db
+    .from("pages_cache")
+    .select("page_id, name, is_active")
+    .eq("page_id", targetPageId)
+    .maybeSingle();
+
+  if (!pageRow || pageRow.is_active === false) {
+    return {
+      ok: false,
+      error: `Destination Page '${targetPageId}' is not connected or active in application settings.`,
+    };
+  }
+
+  const isChanged = post.page_id !== pageRow.page_id;
+
+  const updated = await updatePostRecord(postId, {
+    page_id: pageRow.page_id,
+    page_name: pageRow.name,
+    ...(isChanged && {
+      approved_by_user: false,
+      approved_at: null,
+      approval_content_hash: null,
+      error_message: null,
+    }),
+  });
+
+  return { ok: true, post: updated };
+}
+

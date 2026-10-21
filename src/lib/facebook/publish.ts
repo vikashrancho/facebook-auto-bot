@@ -61,9 +61,11 @@ export async function publishPostNow(
 
   const settings = await getSettings();
 
-  const pageId = post.page_id || settings.default_page_id;
+  // Strict Safeguard: Destination MUST be permanently stored on the post record.
+  // NEVER fall back to a global default Page ID during publication.
+  const pageId = post.page_id;
   if (!pageId) {
-    const errorMsg = new NoPageSelectedError().message;
+    const errorMsg = `[DESTINATION_MISSING] Post '${post.title}' (${postId}) does not have an assigned destination Facebook Page. Publication cannot proceed without an explicit target Page.`;
     if (options.dryRun) {
       throw new Error(`Dry-run validation failed: ${errorMsg}`);
     }
@@ -75,9 +77,7 @@ export async function publishPostNow(
 
   // Resolve target Page credentials using stored page token
   const targetPage = await getPageWithToken(pageId);
-  const pageToken =
-    targetPage?.access_token ||
-    (pageId === settings.default_page_id ? settings.default_page_token : null);
+  const pageToken = targetPage?.access_token;
 
   if (!pageToken || (targetPage && targetPage.is_active === false)) {
     const errorMsg = `Destination Facebook Page (${post.page_name || pageId}) is ${
@@ -94,6 +94,7 @@ export async function publishPostNow(
 
   // Validate token format for live publication to prevent sending mock or corrupted tokens to Meta
   if (
+    !options.dryRun &&
     !options.publisher &&
     (pageToken.startsWith("mock_") || pageToken.startsWith("test_") || pageToken.length < 30)
   ) {
@@ -152,12 +153,33 @@ export async function publishPostNow(
   const publisher = options.publisher ?? publishPhoto;
 
   try {
+    console.log(
+      "[PUBLISH_ATTEMPT]",
+      JSON.stringify({
+        postId: post.id,
+        targetPageId: pageId,
+        targetPageName: post.page_name ?? targetPage?.name ?? null,
+        dryRun: options.dryRun ?? false,
+        hasImage: Boolean(post.image_url),
+      })
+    );
+
     const result = await publisher({
       pageId,
       pageToken,
       message,
       imageUrl: post.image_url,
     });
+
+    console.log(
+      "[PUBLISH_SUCCESS]",
+      JSON.stringify({
+        postId: post.id,
+        targetPageId: pageId,
+        targetPageName: post.page_name ?? targetPage?.name ?? null,
+        facebookPostId: result.id,
+      })
+    );
 
     return await updatePostRecord(postId, {
       status: "posted",

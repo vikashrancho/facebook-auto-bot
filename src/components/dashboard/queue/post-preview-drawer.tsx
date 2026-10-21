@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   X,
   ShieldCheck,
@@ -28,6 +28,7 @@ interface PostPreviewDrawerProps {
   onRequestPublish: (post: Post) => void;
   onRequestReschedule: (post: Post) => void;
   onRequestDelete: (post: Post) => void;
+  onPostUpdated?: (updated: Post) => void;
 }
 
 export function PostPreviewDrawer({
@@ -39,7 +40,62 @@ export function PostPreviewDrawer({
   onRequestPublish,
   onRequestReschedule,
   onRequestDelete,
+  onPostUpdated,
 }: PostPreviewDrawerProps) {
+  const [pages, setPages] = useState<{ id?: string; page_id: string; name: string }[]>([]);
+  const [isChangingPage, setIsChangingPage] = useState(false);
+  const [selectedNewPageId, setSelectedNewPageId] = useState("");
+  const [pageUpdateBusy, setPageUpdateBusy] = useState(false);
+  const [pageUpdateError, setPageUpdateError] = useState<string | null>(null);
+
+  // Load connected pages when drawer opens
+  useEffect(() => {
+    if (isOpen) {
+      setIsChangingPage(false);
+      setPageUpdateError(null);
+      fetch("/api/facebook/pages")
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.pages) {
+            setPages(d.pages);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isOpen, post?.id]);
+
+  useEffect(() => {
+    if (post) {
+      setSelectedNewPageId(post.page_id || "");
+    }
+  }, [post]);
+
+  async function handleSaveDestination() {
+    if (!post || !selectedNewPageId) return;
+    if (selectedNewPageId === post.page_id) {
+      setIsChangingPage(false);
+      return;
+    }
+    setPageUpdateBusy(true);
+    setPageUpdateError(null);
+    try {
+      const res = await fetch(`/api/posts/${post.id}/destination`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageId: selectedNewPageId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to reassign destination page.");
+      setIsChangingPage(false);
+      if (data.post && onPostUpdated) {
+        onPostUpdated(data.post);
+      }
+    } catch (err: any) {
+      setPageUpdateError(err.message || "Failed to update destination.");
+    } finally {
+      setPageUpdateBusy(false);
+    }
+  }
   // Handle ESC key
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -174,14 +230,78 @@ export function PostPreviewDrawer({
               {/* Metadata Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 {/* Target Facebook Page */}
-                <div className="rounded-xl border border-border bg-surface-2/40 p-3">
-                  <p className="font-medium text-muted-foreground">Target Facebook Page</p>
-                  <p className="mt-1 font-semibold text-foreground flex items-center gap-1.5">
-                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1877F2] text-[11px] font-bold text-white">
-                      f
-                    </span>
-                    {post.page_name || "Default Connected Page"}
-                  </p>
+                <div className="rounded-xl border border-border bg-surface-2/40 p-3 sm:col-span-2">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium text-muted-foreground">Target Facebook Page Destination</p>
+                    {!isPosted && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsChangingPage(!isChangingPage);
+                          setPageUpdateError(null);
+                        }}
+                        className="text-[11px] font-semibold text-primary hover:underline cursor-pointer"
+                      >
+                        {isChangingPage ? "Cancel" : "Change Destination Page"}
+                      </button>
+                    )}
+                  </div>
+
+                  {!isChangingPage ? (
+                    <div className="mt-2 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#1877F2] text-xs font-bold text-white shrink-0">
+                          f
+                        </span>
+                        <div>
+                          <p className="font-semibold text-foreground text-sm">
+                            {post.page_name || "Unassigned Facebook Page"}
+                          </p>
+                          <p className="font-mono text-[11px] text-muted-foreground">
+                            {post.page_id ? `Page ID: ${post.page_id}` : "No Page ID assigned"}
+                          </p>
+                        </div>
+                      </div>
+                      {!post.page_id && (
+                        <span className="rounded-full bg-destructive/10 px-2.5 py-0.5 text-[11px] font-semibold text-destructive border border-destructive/20">
+                          Action Required
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-3 space-y-2 border-t border-border/60 pt-3">
+                      <p className="text-[11px] text-muted-foreground">
+                        Select a connected Facebook Page. Changing the destination will reset any existing approval to ensure verification.
+                      </p>
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <select
+                          value={selectedNewPageId}
+                          onChange={(e) => setSelectedNewPageId(e.target.value)}
+                          disabled={pageUpdateBusy}
+                          className="h-9 flex-1 rounded-lg border border-border bg-background px-3 text-xs text-foreground font-medium outline-none focus:border-primary"
+                        >
+                          <option value="">-- Select Facebook Page --</option>
+                          {pages.map((p: { page_id: string; name: string }) => (
+                            <option key={p.page_id} value={p.page_id}>
+                              {p.name} ({p.page_id})
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={handleSaveDestination}
+                          disabled={pageUpdateBusy || !selectedNewPageId || selectedNewPageId === post.page_id}
+                          className="h-9 text-xs"
+                        >
+                          {pageUpdateBusy ? "Updating…" : "Apply Page"}
+                        </Button>
+                      </div>
+                      {pageUpdateError && (
+                        <p className="text-xs text-destructive">{pageUpdateError}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Schedule / Created Timestamp */}

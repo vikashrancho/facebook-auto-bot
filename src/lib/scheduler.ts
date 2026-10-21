@@ -127,9 +127,30 @@ export async function processDueScheduledPosts(
       continue;
     }
 
-    // Safeguard 2: Cryptographic Content-Hash Verification
-    // Ensure post content (title, description, image, hashtags, target Page, UTM) has not drifted
-    const pageId = post.page_id ?? settings.default_page_id ?? "";
+    // Safeguard 2: Destination & Cryptographic Content-Hash Verification
+    // Ensure post has a stored destination Page and content (title, description, image, hashtags, target Page, UTM) has not drifted
+    const pageId = post.page_id;
+    if (!pageId) {
+      report.failed++;
+      const errorMsg =
+        `[DESTINATION_MISSING] Scheduled post '${post.title}' (${post.id}) does not have an assigned destination Facebook Page. ` +
+        `Publication cannot proceed without an explicit target Page.`;
+
+      await updatePostRecord(post.id, {
+        status: "failed",
+        error_message: errorMsg,
+      });
+
+      report.results.push({
+        postId: post.id,
+        title: post.title,
+        scheduledAt: post.scheduled_at,
+        status: "failed",
+        errorMessage: errorMsg,
+      });
+      continue;
+    }
+
     const currentHash = computePostContentHash({
       postId: post.id,
       title: post.title,
@@ -166,12 +187,11 @@ export async function processDueScheduledPosts(
     }
 
     // Safeguard 3: Page & Token Configuration Verification
+    // Uses the page token stored on the specific target Page record (NEVER default page token)
     const targetPage = await getPageWithToken(pageId);
-    const pageToken =
-      targetPage?.access_token ||
-      (pageId === settings.default_page_id ? settings.default_page_token : null);
+    const pageToken = targetPage?.access_token;
 
-    if (!pageId || !pageToken || (targetPage && targetPage.is_active === false)) {
+    if (!pageToken || (targetPage && targetPage.is_active === false)) {
       report.failed++;
       const errorMsg =
         `[MISSING_PAGE] Destination Facebook Page (${post.page_name || pageId}) is ${

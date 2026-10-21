@@ -164,13 +164,30 @@ export interface PageResolutionResult {
 }
 
 /**
+ * Normalizes a page name for resilient matching across spelling variants,
+ * punctuation differences, extra whitespace, and common nicknames.
+ */
+export function normalizePageName(str: string): string {
+  return str
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s]/g, " ") // replace punctuation with spaces
+    .replace(/\s+/g, " ") // collapse multiple spaces
+    .trim()
+    .replace(/\bdoggie\b/g, "doggy") // equate doggie and doggy
+    .replace(/\bdoggies\b/g, "doggies");
+}
+
+/**
  * Universal destination Facebook Page resolver.
- * Accurately resolves a target Page by explicit pageId or exact/normalized pageName.
+ * Accurately resolves a target Page by explicit pageId, exact/normalized pageName,
+ * or unambiguous topic context.
  * Never silently falls back to the default Page when an explicit target is missing or ambiguous.
  */
 export async function resolveTargetFacebookPage(options: {
   pageId?: string | null;
   pageName?: string | null;
+  topic?: string | null;
   allowDefault?: boolean;
 }): Promise<PageResolutionResult> {
   const db = supabaseAdmin();
@@ -178,6 +195,7 @@ export async function resolveTargetFacebookPage(options: {
 
   const rawId = options.pageId?.trim() || null;
   const rawName = options.pageName?.trim() || null;
+  const rawTopic = options.topic?.trim() || null;
   const allowDefault = options.allowDefault ?? false;
 
   // Fetch all active pages from cache
@@ -189,106 +207,214 @@ export async function resolveTargetFacebookPage(options: {
   const activePages = allActiveRows ?? [];
   const availablePages = activePages.map((p) => ({ pageId: p.page_id, name: p.name.trim() }));
 
+  // Helper to log resolution step securely (never logs credentials)
+  const logResolution = (result: PageResolutionResult, method: string) => {
+    try {
+      console.log(
+        "[PAGE_RESOLUTION]",
+        JSON.stringify({
+          method,
+          requestedId: rawId,
+          requestedName: rawName,
+          hasTopic: Boolean(rawTopic),
+          resolvedPageId: result.page?.page_id ?? null,
+          resolvedPageName: result.page?.name ?? null,
+          success: result.ok,
+          errorCode: result.error ?? null,
+        })
+      );
+    } catch {}
+  };
+
   // 1. If an explicit pageId was supplied:
   if (rawId) {
     // Check if rawId matches page_id directly
     const directMatch = await getPageWithToken(rawId);
     if (directMatch && directMatch.is_active !== false) {
-      return { ok: true, page: directMatch };
+      const res: PageResolutionResult = { ok: true, page: directMatch };
+      logResolution(res, "direct_page_id");
+      return res;
     }
 
-    // Sometimes LLMs/users pass the Page Name into pageId (e.g. pageId: "Loving Doggy")
-    const matchingByName = activePages.filter(
-      (p) => p.name.trim().toLowerCase() === rawId.toLowerCase()
-    );
+    // Sometimes LLMs/users pass the Page Name into pageId (e.g. pageId: "Loving Doggy" or "Loving Doggie")
+    const normRawId = normalizePageName(rawId);
+    const matchingByName = activePages.filter((p) => {
+      const exact = p.name.trim().toLowerCase() === rawId.toLowerCase();
+      const norm = normalizePageName(p.name) === normRawId;
+      return exact || norm;
+    });
 
     if (matchingByName.length === 1) {
       const page = await getPageWithToken(matchingByName[0].page_id);
       if (page && page.is_active !== false) {
-        return { ok: true, page };
+        const res: PageResolutionResult = { ok: true, page };
+        logResolution(res, "page_id_as_name");
+        return res;
       }
     } else if (matchingByName.length > 1) {
-      return {
+      const res: PageResolutionResult = {
         ok: false,
         error: "AMBIGUOUS_PAGE_NAME",
-        message: `Ambiguous target Page name: Multiple connected Pages match "${rawId}". Please specify the exact numerical pageId.`,
+        message: `Ambiguous target Page: Multiple connected Pages match "${rawId}". Please specify the exact numerical pageId.`,
         availablePages,
       };
+      logResolution(res, "ambiguous_page_id_name");
+      return res;
     }
 
     // Check if the page exists in cache but is inactive
     const inactiveCheck = await getPageWithToken(rawId);
     if (inactiveCheck && inactiveCheck.is_active === false) {
-      return {
+      const res: PageResolutionResult = {
         ok: false,
         error: "PAGE_INACTIVE",
         message: `Destination Facebook Page "${inactiveCheck.name}" (${rawId}) is currently disconnected or inactive. Please reconnect it on the Pages screen.`,
         availablePages,
       };
+      logResolution(res, "inactive_page_id");
+      return res;
     }
 
     // A specific ID was requested but could not be found
-    return {
+    const res: PageResolutionResult = {
       ok: false,
       error: "PAGE_NOT_FOUND",
       message: `Destination Facebook Page with ID or name '${rawId}' is not connected, inactive, or unauthorized. Call getConnectedFacebookPages to see available Pages.`,
       availablePages,
     };
+    logResolution(res, "unknown_page_id");
+    return res;
   }
 
   // 2. If an explicit pageName was supplied (without pageId):
   if (rawName) {
-    // Check if rawName matches an exact Page name (case-insensitive, trimmed)
-    const matchingByName = activePages.filter(
-      (p) => p.name.trim().toLowerCase() === rawName.toLowerCase()
-    );
+    const normRawName = normalizePageName(rawName);
+
+    // Pass 1: Exact trimmed case-insensitive or normalized match
+    let matchingByName = activePages.filter((p) => {
+      const exact = p.name.trim().toLowerCase() === rawName.toLowerCase();
+      const norm = normalizePageName(p.name) === normRawName;
+      return exact || norm;
+    });
+
+    // Pass 2: Substring or keyword match if not matched in Pass 1 and length >= 4
+    if (matchingByName.length === 0 && normRawName.length >= 4) {
+      matchingByName = activePages.filter((p) => {
+        const pNorm = normalizePageName(p.name);
+        return pNorm.includes(normRawName) || normRawName.includes(pNorm);
+      });
+    }
 
     if (matchingByName.length === 1) {
       const page = await getPageWithToken(matchingByName[0].page_id);
       if (page && page.is_active !== false) {
-        return { ok: true, page };
+        const res: PageResolutionResult = { ok: true, page };
+        logResolution(res, "page_name_match");
+        return res;
       }
     } else if (matchingByName.length > 1) {
-      return {
+      const res: PageResolutionResult = {
         ok: false,
         error: "AMBIGUOUS_PAGE_NAME",
         message: `Ambiguous target Page name: Multiple connected Pages match "${rawName}". Please specify the exact numerical pageId.`,
         availablePages,
       };
+      logResolution(res, "ambiguous_page_name");
+      return res;
     }
 
     // Also check if rawName was actually a numerical page_id passed in pageName
     const directMatch = await getPageWithToken(rawName);
     if (directMatch && directMatch.is_active !== false) {
-      return { ok: true, page: directMatch };
+      const res: PageResolutionResult = { ok: true, page: directMatch };
+      logResolution(res, "page_name_is_id");
+      return res;
+    }
+
+    // Check if matching inactive page
+    const { data: inactiveRows } = await db
+      .from("pages_cache")
+      .select("page_id, name")
+      .eq("is_active", false);
+
+    const inactiveMatch = (inactiveRows ?? []).find(
+      (p) =>
+        p.name.trim().toLowerCase() === rawName.toLowerCase() ||
+        normalizePageName(p.name) === normRawName
+    );
+
+    if (inactiveMatch) {
+      const res: PageResolutionResult = {
+        ok: false,
+        error: "PAGE_INACTIVE",
+        message: `Destination Facebook Page "${inactiveMatch.name}" is currently disconnected or inactive. Please reconnect it on the Pages screen.`,
+        availablePages,
+      };
+      logResolution(res, "inactive_page_name");
+      return res;
     }
 
     // A specific name was requested but could not be found
-    return {
+    const res: PageResolutionResult = {
       ok: false,
       error: "PAGE_NOT_FOUND",
       message: `Destination Facebook Page with name '${rawName}' was requested, but no active connected Page was found. Call getConnectedFacebookPages to see available Pages.`,
       availablePages,
     };
+    logResolution(res, "unknown_page_name");
+    return res;
   }
 
-  // 3. Neither pageId nor pageName was requested:
+  // 3. If topic context was provided and mentions a connected Page:
+  if (rawTopic && rawTopic.length >= 4) {
+    const normTopic = normalizePageName(rawTopic);
+    const topicMatches = activePages.filter((p) => {
+      const pNorm = normalizePageName(p.name);
+      return pNorm.length >= 4 && normTopic.includes(pNorm);
+    });
+
+    if (topicMatches.length === 1) {
+      const page = await getPageWithToken(topicMatches[0].page_id);
+      if (page && page.is_active !== false) {
+        const res: PageResolutionResult = { ok: true, page };
+        logResolution(res, "topic_context_match");
+        return res;
+      }
+    } else if (topicMatches.length > 1) {
+      const res: PageResolutionResult = {
+        ok: false,
+        error: "AMBIGUOUS_PAGE_NAME",
+        message: `Ambiguous target Page in topic context: Multiple connected Pages match "${rawTopic}". Please specify the intended pageId or pageName.`,
+        availablePages,
+      };
+      logResolution(res, "ambiguous_topic_context");
+      return res;
+    }
+  }
+
+  // 4. Neither pageId, pageName, nor unambiguous topic context was provided:
   // Only fall back to default if allowDefault is explicitly true
   if (allowDefault) {
     if (settings.default_page_id) {
       const defaultPage = await getPageWithToken(settings.default_page_id);
       if (defaultPage && defaultPage.is_active !== false) {
-        return { ok: true, page: defaultPage };
+        const res: PageResolutionResult = { ok: true, page: defaultPage };
+        logResolution(res, "allow_default_fallback");
+        return res;
       }
     }
   }
 
-  return {
+  const res: PageResolutionResult = {
     ok: false,
     error: "NO_PAGE_SELECTED",
-    message: "No destination Facebook Page was specified and no active default Page is configured in Settings. Please specify pageId or pageName.",
+    message:
+      "No destination Facebook Page was specified and no unambiguous destination was found in context. " +
+      "Please specify pageId or pageName (e.g. 'Invest in Stock Market', 'Live Jesus Christ', or 'Loving Doggie').",
     availablePages,
   };
+  logResolution(res, "no_page_selected");
+  return res;
 }
 
 /**

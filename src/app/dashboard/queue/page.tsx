@@ -95,14 +95,28 @@ export default function QueuePage() {
     [posts]
   );
 
-  // Available unique Facebook pages from loaded posts
+  // Fetch connected pages from API to populate filter even if 0 posts exist
+  const [connectedPages, setConnectedPages] = useState<{ page_id: string; name: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/facebook/pages")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.pages) setConnectedPages(d.pages);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Available unique Facebook pages from loaded posts and connected pages
   const availablePages = useMemo(() => {
     const set = new Set<string>();
+    for (const cp of connectedPages) {
+      if (cp.name) set.add(cp.name);
+    }
     for (const p of posts) {
       if (p.page_name) set.add(p.page_name);
     }
     return Array.from(set).sort();
-  }, [posts]);
+  }, [posts, connectedPages]);
 
   // Filtered and Sorted Posts
   const filteredPosts = useMemo(() => {
@@ -132,7 +146,11 @@ export default function QueuePage() {
 
         // Page Filter
         if (pageFilter !== "all") {
-          if (post.page_name !== pageFilter) return false;
+          if (pageFilter === "unassigned") {
+            if (post.page_id) return false;
+          } else if (post.page_name !== pageFilter && post.page_id !== pageFilter) {
+            return false;
+          }
         }
 
         return true;
@@ -431,6 +449,13 @@ export default function QueuePage() {
         onRequestPublish={(p) => setPublishConfirmPost(p)}
         onRequestReschedule={(p) => setReschedulePost(p)}
         onRequestDelete={(p) => setDeleteConfirmPost(p)}
+        onPostUpdated={(updated) => {
+          setPreviewPost(updated);
+          setSuccessBanner({
+            message: `Destination page updated to '${updated.page_name || updated.page_id}'. Prior approval was reset.`,
+          });
+          load();
+        }}
       />
 
       {/* 7. Publish Immediate Confirmation Modal */}
