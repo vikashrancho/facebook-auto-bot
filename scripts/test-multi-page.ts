@@ -690,13 +690,24 @@ async function run() {
     // -------------------------------------------------------------
     console.log("\n--- Suite 7: Master Prompt Acceptance Scenarios A through L ---");
 
+    const db = supabaseAdmin();
+    const { data: existingLivePages } = await db
+      .from("pages_cache")
+      .select("page_id, access_token")
+      .in("page_id", ["111439634371975", "106882792429612", "286923627847340"]);
+
+    const existingTokenMap = new Map((existingLivePages || []).map((p) => [p.page_id, p.access_token]));
+
     const livePages = [
       {
         id: "111439634371975",
         page_id: "111439634371975",
         name: "Invest In Stock Market",
         category: "Investing",
-        access_token: "EAAB_INVEST_IN_STOCK_MARKET_TEST_TOKEN_LONG_ENOUGH_12345",
+        access_token:
+          existingTokenMap.get("111439634371975") && (existingTokenMap.get("111439634371975")?.length ?? 0) > 100
+            ? (existingTokenMap.get("111439634371975") as string)
+            : "EAAB_INVEST_IN_STOCK_MARKET_TEST_TOKEN_LONG_ENOUGH_12345",
         is_active: true,
       },
       {
@@ -704,7 +715,10 @@ async function run() {
         page_id: "106882792429612",
         name: "Live Jesus Christ",
         category: "Religious Organization",
-        access_token: "EAAB_LIVE_JESUS_CHRIST_TEST_TOKEN_LONG_ENOUGH_12345",
+        access_token:
+          existingTokenMap.get("106882792429612") && (existingTokenMap.get("106882792429612")?.length ?? 0) > 100
+            ? (existingTokenMap.get("106882792429612") as string)
+            : "EAAB_LIVE_JESUS_CHRIST_TEST_TOKEN_LONG_ENOUGH_12345",
         is_active: true,
       },
       {
@@ -712,7 +726,10 @@ async function run() {
         page_id: "286923627847340",
         name: "loving doggy ",
         category: "Pets",
-        access_token: "EAAB_LOVING_DOGGY_TEST_TOKEN_LONG_ENOUGH_12345",
+        access_token:
+          existingTokenMap.get("286923627847340") && (existingTokenMap.get("286923627847340")?.length ?? 0) > 100
+            ? (existingTokenMap.get("286923627847340") as string)
+            : "EAAB_LOVING_DOGGY_TEST_TOKEN_LONG_ENOUGH_12345",
         is_active: true,
       },
     ];
