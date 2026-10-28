@@ -98,7 +98,7 @@ import { OAUTH_STATE_COOKIE } from "@/lib/facebook/oauth-state";
 import { publishPostNow } from "@/lib/facebook/publish";
 import { maybeRunAutopilot } from "@/lib/autopilot";
 import { supabaseAdmin } from "@/lib/supabase/server";
-import { facebookPostUrl, type PostStatus, type ImageSource } from "@/lib/types";
+import { facebookPostUrl, type Post, type PostStatus, type ImageSource } from "@/lib/types";
 
 /**
  * Every API endpoint lives in this one catch-all handler on purpose.

@@ -523,7 +523,7 @@ function SettingsForm() {
               />
               <Button
                 type="button"
-                variant="outline"
+                variant="secondary"
                 size="sm"
                 className="shrink-0 gap-1.5"
                 onClick={() => {
@@ -544,7 +544,7 @@ function SettingsForm() {
           <div className="pt-1 flex flex-wrap items-center justify-between gap-3">
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               size="sm"
               disabled={runningCron}
               onClick={async () => {
