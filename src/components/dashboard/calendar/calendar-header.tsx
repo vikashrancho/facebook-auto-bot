@@ -10,7 +10,9 @@ import {
   ArrowsClockwise,
   FadersHorizontal,
   Check,
+  Rocket,
 } from "@phosphor-icons/react/dist/ssr";
+
 import type { CalendarView } from "@/lib/types";
 
 interface CalendarHeaderProps {
@@ -27,7 +29,10 @@ interface CalendarHeaderProps {
   onDateSelect: (date: Date) => void;
   onOpenScheduleModal: () => void;
   onRefresh: () => void;
+  onProcessDuePosts?: () => void;
+  dueCount?: number;
 }
+
 
 const MONTH_NAMES = [
   "January",
@@ -60,7 +65,10 @@ export function CalendarHeader({
   onDateSelect,
   onOpenScheduleModal,
   onRefresh,
+  onProcessDuePosts,
+  dueCount = 0,
 }: CalendarHeaderProps) {
+
   // State for Meta-style date picker popover
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [isViewDropdownOpen, setIsViewDropdownOpen] = useState(false);
@@ -401,6 +409,20 @@ export function CalendarHeader({
 
         {/* Right Controls: Navigation Pill, View Dropdown, Filter Toggle, Schedule Action */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Process Due Posts Button */}
+          {dueCount > 0 && onProcessDuePosts && (
+            <button
+              type="button"
+              onClick={onProcessDuePosts}
+              disabled={isRefreshing}
+              title="Process and publish due scheduled posts to Facebook"
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 text-xs font-semibold text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition cursor-pointer"
+            >
+              <Rocket size={15} weight="bold" />
+              <span>Publish {dueCount} Due Post{dueCount > 1 ? "s" : ""}</span>
+            </button>
+          )}
+
           {/* Refresh Button */}
           <button
             type="button"
@@ -414,6 +436,7 @@ export function CalendarHeader({
               className={isRefreshing ? "animate-spin text-primary" : ""}
             />
           </button>
+
 
           {/* Prev / Today / Next Navigation Group */}
           <div className="flex items-center rounded-xl border border-border bg-surface-2 p-0.5">

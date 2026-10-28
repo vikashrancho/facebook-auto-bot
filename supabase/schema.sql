@@ -57,6 +57,7 @@ create table if not exists posts (
   page_name text,
   status text not null default 'draft', -- 'draft' | 'scheduled' | 'posted' | 'failed'
   scheduled_at timestamptz,
+  scheduled_timezone text,
   posted_at timestamptz,
   facebook_post_id text,
   error_message text,
@@ -185,6 +186,7 @@ create index if not exists content_requests_post_id_idx on content_requests(post
 alter table app_settings add column if not exists chatgpt_custom_gpt_url text;
 
 -- Content Calendar & Automatic Scheduling upgrades
+alter table posts add column if not exists scheduled_timezone text;
 alter table posts add column if not exists schedule_notes text;
 alter table posts add column if not exists last_attempt_at timestamptz;
 alter table posts add column if not exists retry_count integer not null default 0;

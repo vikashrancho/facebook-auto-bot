@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowsClockwise,
@@ -9,7 +10,9 @@ import {
   WarningCircle,
   ArrowSquareOut,
   X,
+  Rocket,
 } from "@phosphor-icons/react/dist/ssr";
+
 import { facebookPostUrl } from "@/lib/types";
 import type { Post } from "@/lib/types";
 
@@ -27,6 +30,17 @@ import {
 } from "@/components/dashboard/queue/queue-states";
 
 export default function QueuePage() {
+  return (
+    <Suspense fallback={<QueueSkeleton />}>
+      <QueueContent />
+    </Suspense>
+  );
+}
+
+function QueueContent() {
+  const searchParams = useSearchParams();
+  const queryPostId = searchParams.get("post");
+
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -56,29 +70,63 @@ export default function QueuePage() {
     setError(null);
 
     try {
-      // Fetch queue items: draft, scheduled, publishing, failed
-      const res = await fetch("/api/posts?status=draft,scheduled,publishing,failed");
+      // Fetch queue items: draft, pending_review, approved, scheduled, publishing, failed
+      const res = await fetch("/api/posts?status=draft,pending_review,approved,scheduled,publishing,failed");
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to load the queue.");
       const loaded: Post[] = data.posts ?? [];
       setPosts(loaded);
 
-      // Keep previewDrawer post in sync if open
-      setPreviewPost((prev) => {
-        if (!prev) return null;
-        return loaded.find((p) => p.id === prev.id) ?? prev;
-      });
+      if (queryPostId) {
+        const found = loaded.find((p) => p.id === queryPostId);
+        if (found) {
+          setPreviewPost(found);
+        } else {
+          // If not in the general queue list, fetch directly
+          try {
+            const singleRes = await fetch(`/api/posts/${queryPostId}`);
+            if (singleRes.ok) {
+              const singleData = await singleRes.json();
+              if (singleData.post) {
+                setPreviewPost(singleData.post);
+                setPosts((prev) => [singleData.post, ...prev.filter((p) => p.id !== singleData.post.id)]);
+              } else {
+                setError(`Post with ID '${queryPostId}' could not be found.`);
+              }
+            } else {
+              setError(`Post with ID '${queryPostId}' could not be found.`);
+            }
+          } catch {
+            setError(`Post with ID '${queryPostId}' could not be found.`);
+          }
+        }
+      } else {
+        // Keep previewDrawer post in sync if open
+        setPreviewPost((prev) => {
+          if (!prev) return null;
+          return loaded.find((p) => p.id === prev.id) ?? prev;
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load the queue.");
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [queryPostId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const handleUpdate = () => {
+      load();
+    };
+    window.addEventListener("pab:posts-updated", handleUpdate);
+    return () => window.removeEventListener("pab:posts-updated", handleUpdate);
+  }, [load]);
+
 
   // Derived Metric Counts
   const totalCount = posts.length;
@@ -90,7 +138,14 @@ export default function QueuePage() {
     () => posts.filter((p) => p.status === "scheduled").length,
     [posts]
   );
+  const dueCount = useMemo(() => {
+    const now = Date.now();
+    return posts.filter(
+      (p) => p.status === "scheduled" && p.scheduled_at && new Date(p.scheduled_at).getTime() <= now
+    ).length;
+  }, [posts]);
   const failedCount = useMemo(
+
     () => posts.filter((p) => p.status === "failed" || Boolean(p.error_message)).length,
     [posts]
   );
@@ -137,7 +192,7 @@ export default function QueuePage() {
         } else if (statusFilter === "scheduled") {
           if (post.status !== "scheduled") return false;
         } else if (statusFilter === "draft") {
-          if (post.status !== "draft") return false;
+          if (post.status !== "draft" && post.status !== "pending_review") return false;
         } else if (statusFilter === "posted") {
           if (post.status !== "posted") return false;
         } else if (statusFilter === "failed") {
@@ -249,9 +304,11 @@ export default function QueuePage() {
         body: JSON.stringify({
           scheduledAt,
           status: scheduledAt ? "scheduled" : "draft",
+          approve: true,
         }),
       });
       const data = await res.json();
+
       if (!res.ok) throw new Error(data.error ?? "Failed to update schedule.");
 
       setSuccessBanner({
@@ -273,8 +330,32 @@ export default function QueuePage() {
     }
   }
 
+  // Action: Process Due Scheduled Posts Now
+  async function handleProcessDuePosts() {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/cron/process-queue", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to process due posts.");
+      const published = data.processedFromQueue ?? 0;
+      setSuccessBanner({
+        message:
+          published > 0
+            ? `Successfully published ${published} due post${published > 1 ? "s" : ""} to Facebook!`
+            : "Scheduler executed: no scheduled posts were due at this time.",
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to run scheduler.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   // Action: Confirm Delete Post
   async function handleConfirmDelete() {
+
     if (!deleteConfirmPost) return;
     const post = deleteConfirmPost;
     setBusyId(post.id);
@@ -317,9 +398,22 @@ export default function QueuePage() {
         </div>
 
         <div className="flex items-center gap-2.5">
+          {dueCount > 0 && (
+            <button
+              type="button"
+              onClick={handleProcessDuePosts}
+              disabled={refreshing || loading}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3.5 text-sm font-semibold text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 transition cursor-pointer"
+            >
+              <Rocket size={16} weight="bold" />
+              <span>Publish {dueCount} Due Post{dueCount > 1 ? "s" : ""}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => load(true)}
+
             disabled={refreshing || loading}
             title="Refresh queue items"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-border bg-surface px-3.5 text-sm font-medium text-muted-foreground transition hover:bg-surface-2 hover:text-foreground disabled:opacity-50 cursor-pointer"

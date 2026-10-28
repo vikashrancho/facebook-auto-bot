@@ -1,6 +1,14 @@
 export type ImageSource = "ai" | "stock";
 export type ImageSourcePref = "ai" | "stock" | "mixed";
-export type PostStatus = "draft" | "scheduled" | "publishing" | "posted" | "failed";
+export type PostStatus =
+  | "draft"
+  | "pending_review"
+  | "approved"
+  | "scheduled"
+  | "publishing"
+  | "posted"
+  | "failed";
+
 
 /**
  * Where autopilot gets its subjects. "mine" rotates through the owner's own
@@ -110,6 +118,7 @@ export interface Post {
   approved_at?: string | null;
   approval_content_hash?: string | null;
   schedule_notes?: string | null;
+  scheduled_timezone?: string | null;
   last_attempt_at?: string | null;
   retry_count?: number;
 }

@@ -1,6 +1,20 @@
 import { supabaseAdmin } from "@/lib/supabase/server";
 import type { Post, PostStatus } from "@/lib/types";
 
+export function hydratePostTimezone(post: Post): Post {
+  if (!post) return post;
+  if (post.schedule_notes && post.schedule_notes.includes("[tz:")) {
+    const match = post.schedule_notes.match(/\[tz:([^\]]+)\]/);
+    const cleanNotes = post.schedule_notes.replace(/\[tz:[^\]]+\]\s*/g, "").trim() || null;
+    return {
+      ...post,
+      scheduled_timezone: post.scheduled_timezone || (match ? match[1] : null),
+      schedule_notes: cleanNotes,
+    };
+  }
+  return post;
+}
+
 export async function listPosts(
   opts: { status?: PostStatus | PostStatus[]; limit?: number } = {}
 ): Promise<Post[]> {
@@ -16,7 +30,7 @@ export async function listPosts(
 
   const { data, error } = await query;
   if (error) throw new Error(`Failed to list posts: ${error.message}`);
-  return (data ?? []) as Post[];
+  return ((data ?? []) as Post[]).map(hydratePostTimezone);
 }
 
 export async function getPost(id: string): Promise<Post | null> {
@@ -30,7 +44,7 @@ export async function getPost(id: string): Promise<Post | null> {
     if (error.code === "22P02") return null;
     throw new Error(`Failed to load post: ${error.message}`);
   }
-  return data as Post | null;
+  return data ? hydratePostTimezone(data as Post) : null;
 }
 
 export async function createPostRecord(
@@ -43,8 +57,23 @@ export async function createPostRecord(
 ): Promise<Post> {
   const db = supabaseAdmin();
   const { data, error } = await db.from("posts").insert(input).select().single();
-  if (error) throw new Error(`Failed to create post: ${error.message}`);
-  return data as Post;
+  if (error) {
+    // If scheduled_timezone or other optional scheduling column does not exist yet on Supabase, retry
+    if (error.message.includes("column of 'posts' in the schema cache") || error.code === "42703") {
+      const { scheduled_timezone, ...fallbackInput } = input;
+      let notes = fallbackInput.schedule_notes || "";
+      if (scheduled_timezone && !notes.includes("[tz:")) {
+        notes = `[tz:${scheduled_timezone}] ${notes}`.trim();
+        fallbackInput.schedule_notes = notes;
+      }
+      const retry = await db.from("posts").insert(fallbackInput).select().single();
+      if (!retry.error && retry.data) {
+        return hydratePostTimezone(retry.data as Post);
+      }
+    }
+    throw new Error(`Failed to create post: ${error.message}`);
+  }
+  return hydratePostTimezone(data as Post);
 }
 
 export async function updatePostRecord(id: string, patch: Partial<Post>): Promise<Post> {
@@ -53,25 +82,48 @@ export async function updatePostRecord(id: string, patch: Partial<Post>): Promis
   if (error) {
     // If an optional scheduling column does not exist yet on Supabase, retry without it
     if (
-      error.message.includes("column of 'posts' in the schema cache") &&
-      (patch.schedule_notes !== undefined ||
-        patch.last_attempt_at !== undefined ||
-        patch.retry_count !== undefined)
+      error.message.includes("column of 'posts' in the schema cache") ||
+      error.code === "42703"
     ) {
-      const { schedule_notes, last_attempt_at, retry_count, ...fallbackPatch } = patch;
+      const { scheduled_timezone, schedule_notes, last_attempt_at, retry_count, ...fallbackPatch } = patch;
+      const patchObj: any = { ...fallbackPatch };
+      if (schedule_notes !== undefined || scheduled_timezone !== undefined) {
+        let notes = schedule_notes ?? "";
+        if (scheduled_timezone) {
+          notes = notes.replace(/\[tz:[^\]]+\]\s*/g, "").trim();
+          notes = `[tz:${scheduled_timezone}] ${notes}`.trim();
+        } else if (scheduled_timezone === null) {
+          notes = notes.replace(/\[tz:[^\]]+\]\s*/g, "").trim();
+        }
+        patchObj.schedule_notes = notes || null;
+      }
+      if (last_attempt_at !== undefined) patchObj.last_attempt_at = last_attempt_at;
+      if (retry_count !== undefined) patchObj.retry_count = retry_count;
+
       const fallbackRes = await db
+        .from("posts")
+        .update(patchObj)
+        .eq("id", id)
+        .select()
+        .single();
+      if (!fallbackRes.error && fallbackRes.data) {
+        return hydratePostTimezone(fallbackRes.data as Post);
+      }
+
+      // If still failing, strip all extra scheduling columns
+      const bareRes = await db
         .from("posts")
         .update(fallbackPatch)
         .eq("id", id)
         .select()
         .single();
-      if (!fallbackRes.error && fallbackRes.data) {
-        return fallbackRes.data as Post;
+      if (!bareRes.error && bareRes.data) {
+        return hydratePostTimezone(bareRes.data as Post);
       }
     }
     throw new Error(`Failed to update post: ${error.message}`);
   }
-  return data as Post;
+  return hydratePostTimezone(data as Post);
 }
 
 export async function deletePostRecord(id: string): Promise<void> {
@@ -81,7 +133,8 @@ export async function deletePostRecord(id: string): Promise<void> {
 }
 
 /** Scheduled posts whose time has come, oldest first — used by the cron worker. */
-export async function listDuePosts(nowIso: string): Promise<Post[]> {
+export async function listDuePosts(now: Date | string = new Date()): Promise<Post[]> {
+  const nowIso = typeof now === "string" ? now : now.toISOString();
   const db = supabaseAdmin();
   const { data, error } = await db
     .from("posts")
@@ -91,7 +144,7 @@ export async function listDuePosts(nowIso: string): Promise<Post[]> {
     .order("scheduled_at", { ascending: true })
     .limit(20);
   if (error) throw new Error(`Failed to list due posts: ${error.message}`);
-  return (data ?? []) as Post[];
+  return ((data ?? []) as Post[]).map(hydratePostTimezone);
 }
 
 /** Posts query optimized for the Content Calendar */
@@ -117,7 +170,7 @@ export async function listCalendarPosts(opts: {
 
   const { data, error } = await query;
   if (error) throw new Error(`Failed to list calendar posts: ${error.message}`);
-  return (data ?? []) as Post[];
+  return ((data ?? []) as Post[]).map(hydratePostTimezone);
 }
 
 /**

@@ -25,7 +25,8 @@ interface SchedulePostModalProps {
   onSaveSchedule: (
     postId: string,
     scheduledAt: string,
-    scheduleNotes?: string
+    scheduleNotes?: string,
+    approve?: boolean
   ) => Promise<void>;
 }
 
@@ -43,8 +44,10 @@ export function SchedulePostModal({
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [selectedTime, setSelectedTime] = useState<string>("");
   const [scheduleNotes, setScheduleNotes] = useState<string>("");
+  const [autoApprove, setAutoApprove] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
+
 
   // Active post to be scheduled
   const activePost =
@@ -144,13 +147,14 @@ export function SchedulePostModal({
 
     try {
       const utcIso = toUtcIsoString(selectedDate, selectedTime, timezone);
-      await onSaveSchedule(activePost.id, utcIso, scheduleNotes.trim() || undefined);
+      await onSaveSchedule(activePost.id, utcIso, scheduleNotes.trim() || undefined, autoApprove);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save post schedule.");
       setIsConfirming(false);
     }
   }
+
 
   const plannedUtcIso = (() => {
     try {
@@ -249,28 +253,29 @@ export function SchedulePostModal({
                 </p>
               </div>
 
-              {/* Approval Notice */}
-              {!activePost.approved_by_user ? (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-2">
-                  <Clock size={16} weight="bold" className="shrink-0 mt-0.5" />
-                  <div>
-                    <span className="font-bold">Human Approval Separation:</span>
-                    <p className="mt-0.5 opacity-90 leading-relaxed">
-                      This post is currently <strong>awaiting approval</strong>. It will be placed on the calendar at this scheduled time, but the server scheduler will <strong>never publish</strong> it until you review and approve the post.
-                    </p>
-                  </div>
-                </div>
-              ) : (
+              {/* Approval Status */}
+              {autoApprove || activePost.approved_by_user ? (
                 <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-600 dark:text-emerald-400 flex items-start gap-2">
                   <ShieldCheck size={16} weight="fill" className="shrink-0 mt-0.5" />
                   <div>
-                    <span className="font-bold">Approved Post:</span>
+                    <span className="font-bold">Approved for Automatic Publishing:</span>
                     <p className="mt-0.5 opacity-90 leading-relaxed">
                       This post is approved. When its scheduled time arrives, the background server scheduler will automatically publish it to Facebook.
                     </p>
                   </div>
                 </div>
+              ) : (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-2">
+                  <Clock size={16} weight="bold" className="shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Staged Draft Only (Awaiting Approval):</span>
+                    <p className="mt-0.5 opacity-90 leading-relaxed">
+                      You opted out of automatic approval. This post will stay on the calendar but will <strong>never publish automatically</strong> until explicitly reviewed and approved.
+                    </p>
+                  </div>
+                </div>
               )}
+
 
               {/* Summary Post Preview Card */}
               <div className="flex items-start gap-3 rounded-xl border border-border bg-surface-2 p-3 text-xs">
@@ -407,13 +412,27 @@ export function SchedulePostModal({
                 />
               </div>
 
-              {/* Unapproved Note */}
-              {!activePost.approved_by_user && (
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-600 dark:text-amber-400">
-                  <strong>Notice:</strong> This post is unapproved. It can be scheduled, but will NOT be published automatically until approved by human administrator.
-                </div>
-              )}
+              {/* Approval Checkbox */}
+              <div className="rounded-xl border border-border bg-surface-2/60 p-3.5">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoApprove}
+                    onChange={(e) => setAutoApprove(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-border text-primary focus:ring-primary cursor-pointer"
+                  />
+                  <div>
+                    <span className="text-xs font-semibold text-foreground">
+                      Approve and enable automatic Facebook publication
+                    </span>
+                    <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                      Automatically confirms human approval. When the scheduled time arrives, the background scheduler will automatically publish this post directly to Facebook without manual intervention.
+                    </p>
+                  </div>
+                </label>
+              </div>
             </form>
+
           )}
         </div>
 

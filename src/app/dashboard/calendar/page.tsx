@@ -112,6 +112,15 @@ export default function ContentCalendarPage() {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    const handleUpdate = () => {
+      loadData();
+    };
+    window.addEventListener("pab:posts-updated", handleUpdate);
+    return () => window.removeEventListener("pab:posts-updated", handleUpdate);
+  }, [loadData]);
+
+
   // Unique pages from loaded posts
   const availablePages = useMemo(() => {
     const set = new Set<string>();
@@ -125,6 +134,15 @@ export default function ContentCalendarPage() {
   const availableDrafts = useMemo(() => {
     return allPosts.filter((p) => p.status !== "posted" && p.status !== "publishing");
   }, [allPosts]);
+
+  // Count of posts currently scheduled and due for publication
+  const dueCount = useMemo(() => {
+    const now = Date.now();
+    return allPosts.filter(
+      (p) => p.status === "scheduled" && p.scheduled_at && new Date(p.scheduled_at).getTime() <= now
+    ).length;
+  }, [allPosts]);
+
 
   // Filtered posts for calendar display
   const filteredPosts = useMemo(() => {
@@ -218,7 +236,8 @@ export default function ContentCalendarPage() {
   async function handleSaveSchedule(
     postId: string,
     scheduledAt: string,
-    scheduleNotes?: string
+    scheduleNotes?: string,
+    approve: boolean = true
   ) {
     setBusyId(postId);
     setError(null);
@@ -230,8 +249,10 @@ export default function ContentCalendarPage() {
         body: JSON.stringify({
           scheduledAt,
           scheduleNotes,
+          approve,
         }),
       });
+
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to schedule post.");
@@ -251,6 +272,30 @@ export default function ContentCalendarPage() {
       setBusyId(null);
     }
   }
+
+  // Action: Process Due Scheduled Posts Now
+  async function handleProcessDuePosts() {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/cron/process-queue", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to process due posts.");
+      const published = data.processedFromQueue ?? 0;
+      setSuccessBanner({
+        message:
+          published > 0
+            ? `Successfully published ${published} due post${published > 1 ? "s" : ""} to Facebook!`
+            : "Scheduler executed: no scheduled posts were due at this time.",
+      });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to run scheduler.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
 
   // Action: Drag-and-drop reschedule to a new calendar day
   async function handleMovePost(postId: string, targetDate: Date) {
@@ -447,7 +492,10 @@ export default function ContentCalendarPage() {
         onDateSelect={(d) => setCurrentDate(d)}
         onOpenScheduleModal={() => handleOpenScheduleModal(null)}
         onRefresh={() => loadData(true)}
+        onProcessDuePosts={handleProcessDuePosts}
+        dueCount={dueCount}
       />
+
 
       {/* 2. Notifications & Feedback */}
       {error && (

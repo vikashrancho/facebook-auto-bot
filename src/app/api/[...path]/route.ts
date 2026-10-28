@@ -44,7 +44,8 @@ import {
   reassignPostDestination,
 } from "@/lib/db/posts";
 import { processDueScheduledPosts } from "@/lib/scheduler";
-import { localParts, DEFAULT_TIMEZONE } from "@/lib/time";
+import { localParts, DEFAULT_TIMEZONE, normalizeTimezone, isValidTimezone } from "@/lib/time";
+import { buildDashboardReviewUrl } from "@/lib/urls";
 import { getSettings, updateSettings } from "@/lib/db/settings";
 import { listTemplates, saveTemplate, deleteTemplate } from "@/lib/db/templates";
 import { TEMPLATE_PRESETS } from "@/lib/templates/presets";
@@ -149,12 +150,13 @@ async function hasSession(req: Request): Promise<boolean> {
 }
 
 /**
- * The cron route authenticates with CRON_SECRET when one is set. When it is
- * not, it falls back to requiring the admin session rather than being open —
- * an unset optional variable must not silently expose a publishing endpoint.
+ * The cron route authenticates with CRON_SECRET when one is set, or with an
+ * authenticated admin dashboard session. This allows background client-side
+ * schedule flushing while keeping the route strictly protected from public access.
  */
 async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
-  if (!env.cronSecret) return hasSession(req);
+  if (await hasSession(req)) return true;
+  if (!env.cronSecret) return false;
   const auth = req.headers.get("authorization");
   if (auth && auth.startsWith("Bearer ")) {
     const token = auth.slice(7).trim();
@@ -166,6 +168,7 @@ async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
   }
   return false;
 }
+
 
 const INTEGRATION_ROUTES = new Set([
   "health",
@@ -485,9 +488,18 @@ export async function GET(req: Request, ctx: Ctx) {
 
       const isContentUnchangedSinceApproval = !post.approval_content_hash || post.approval_content_hash === contentHash;
 
+      let authoritativeStatus: PostStatus = post.status;
+      if (post.status === "draft") {
+        if (post.approved_by_user) {
+          authoritativeStatus = post.scheduled_at ? "scheduled" : "approved";
+        } else {
+          authoritativeStatus = "pending_review";
+        }
+      }
+
       return json({
         postId: post.id,
-        status: post.status === "draft" ? "pending_review" : post.status,
+        status: authoritativeStatus,
         title: post.title,
         description: post.description,
         hashtags: post.hashtags || [],
@@ -495,15 +507,25 @@ export async function GET(req: Request, ctx: Ctx) {
         pageId: post.page_id,
         pageName: post.page_name,
         contentHash,
-        reviewUrl: `/dashboard/queue?post=${post.id}`,
+        reviewUrl: buildDashboardReviewUrl(post.id, req),
         approvedByUser: Boolean(post.approved_by_user),
+        approved: Boolean(post.approved_by_user),
         approvedAt: post.approved_at,
+        scheduledAt: post.scheduled_at,
+        scheduledTimezone: post.scheduled_timezone || null,
         isContentUnchangedSinceApproval,
         facebookPostId: post.facebook_post_id,
         facebookPostUrl: post.facebook_post_id ? facebookPostUrl(post.facebook_post_id) : null,
         postedAt: post.posted_at,
         errorMessage: post.error_message,
       });
+    }
+
+    // posts/<id> — retrieve single post for dashboard review/preview
+    if (path.length === 2 && path[0] === "posts") {
+      const post = await getPost(path[1]);
+      if (!post) return notFound();
+      return json({ post });
     }
 
     if (route === "content-requests") {
@@ -545,11 +567,11 @@ export async function GET(req: Request, ctx: Ctx) {
       if (request.status === "draft_created" && request.post_id) {
         return json(
           {
-            error: `Content request '${id}' has already been processed into draft post '${request.post_id}'. Review draft at: ${request.review_url || `/dashboard/queue?post=${request.post_id}`}. To create a new post, submit a new content request.`,
+            error: `Content request '${id}' has already been processed into draft post '${request.post_id}'. Review draft at: ${request.review_url || buildDashboardReviewUrl(request.post_id, req)}. To create a new post, submit a new content request.`,
             requestId: request.id,
             status: request.status,
             postId: request.post_id,
-            reviewUrl: request.review_url,
+            reviewUrl: request.review_url || buildDashboardReviewUrl(request.post_id, req),
           },
           409
         );
@@ -740,6 +762,9 @@ const CreateChatGPTPostBody = z
     pageName: z.string().trim().min(1).max(200).optional(),
     targetPageName: z.string().trim().min(1).max(200).optional(),
     page: z.string().trim().min(1).max(200).optional(),
+    scheduledAt: z.string().trim().min(5).optional(),
+    timezone: z.string().trim().max(100).optional(),
+    scheduleNotes: z.string().trim().max(500).optional(),
   })
   .refine(
     (data) =>
@@ -756,6 +781,22 @@ const CreateChatGPTPostBody = z
 const ApproveChatGPTPostBody = z.object({
   userConfirmed: z.boolean(),
   contentHash: z.string().trim().min(1),
+  scheduledAt: z.string().trim().min(5).optional(),
+  timezone: z.string().trim().max(100).optional(),
+  scheduleNotes: z.string().trim().max(500).optional(),
+  targetPageId: z.string().trim().min(1).max(100).optional(),
+  targetPageName: z.string().trim().min(1).max(200).optional(),
+  expectedPageId: z.string().trim().min(1).max(100).optional(),
+  expectedPageName: z.string().trim().min(1).max(200).optional(),
+});
+
+const ScheduleChatGPTPostBody = z.object({
+  scheduledAt: z.string().trim().min(5, "scheduledAt is required (valid ISO datetime)."),
+  timezone: z.string().trim().max(100).optional(),
+  scheduleNotes: z.string().trim().max(500).optional(),
+  approvalToken: z.string().trim().min(10).optional(),
+  contentHash: z.string().trim().min(1).optional(),
+  userConfirmed: z.boolean().optional(),
   targetPageId: z.string().trim().min(1).max(100).optional(),
   targetPageName: z.string().trim().min(1).max(200).optional(),
   expectedPageId: z.string().trim().min(1).max(100).optional(),
@@ -860,11 +901,32 @@ export async function POST(req: Request, ctx: Ctx) {
         status: b.action === "schedule" ? "scheduled" : "draft",
       });
 
+      if (b.action === "schedule") {
+        const settings = await getSettings();
+        const hash = computePostContentHash({
+          postId: post.id,
+          title: post.title,
+          description: post.description,
+          hashtags: post.hashtags,
+          imageUrl: post.image_url,
+          pageId,
+          linkUrl: post.link_url,
+          utmSuffix: settings.utm_suffix,
+        });
+        const approvedPost = await updatePostRecord(post.id, {
+          approved_by_user: true,
+          approved_at: new Date().toISOString(),
+          approval_content_hash: hash,
+        });
+        return json({ post: approvedPost });
+      }
+
       if (b.action === "post_now") {
         return json({ post: await publishPostNow(post.id) });
       }
       return json({ post });
     }
+
 
     if (route === "content-requests") {
       const parsed = CreateContentRequestBody.safeParse(await req.json().catch(() => null));
@@ -983,19 +1045,29 @@ export async function POST(req: Request, ctx: Ctx) {
         utmSuffix: settings.utm_suffix,
       });
 
+      const hasValidFutureSchedule =
+        Boolean(post.scheduled_at) && new Date(post.scheduled_at!).getTime() > Date.now();
+      const nextStatus: PostStatus = hasValidFutureSchedule ? "scheduled" : "approved";
+
       const updated = await updatePostRecord(post.id, {
         approved_by_user: true,
         approved_at: new Date().toISOString(),
         approval_content_hash: currentHash,
+        status: nextStatus,
       });
 
       return json({
         ok: true,
         postId: updated.id,
+        status: updated.status,
         approvedByUser: true,
         approvedAt: updated.approved_at,
         approvalContentHash: updated.approval_content_hash,
-        message: "Post successfully approved by human administrator in dashboard.",
+        scheduledAt: updated.scheduled_at,
+        scheduledTimezone: updated.scheduled_timezone || null,
+        message: hasValidFutureSchedule
+          ? `Post approved and confirmed for scheduled publication at ${updated.scheduled_at}.`
+          : "Post successfully approved by human administrator in dashboard.",
       });
     }
 
@@ -1063,8 +1135,11 @@ export async function POST(req: Request, ctx: Ctx) {
       const body = await req.json().catch(() => null);
       const ScheduleBody = z.object({
         scheduledAt: z.string().datetime(),
+        timezone: z.string().max(100).optional(),
         scheduleNotes: z.string().max(500).optional(),
         allowPast: z.boolean().optional(),
+        approve: z.boolean().optional(),
+        autoApprove: z.boolean().optional(),
       });
 
       const parsed = ScheduleBody.safeParse(body);
@@ -1086,15 +1161,47 @@ export async function POST(req: Request, ctx: Ctx) {
         return json({ error: "Target Facebook Page is not assigned to this post. Please assign a destination Page before scheduling." }, 422);
       }
 
+      const settings = await getSettings();
+      let resolvedTz = post.scheduled_timezone || settings.timezone || DEFAULT_TIMEZONE;
+      if (parsed.data.timezone) {
+        try {
+          resolvedTz = normalizeTimezone(parsed.data.timezone, resolvedTz);
+        } catch {}
+      }
+
+      // Automatically approve and sign content when scheduled from dashboard, unless explicitly opted out
+      const shouldApprove = parsed.data.approve !== false && parsed.data.autoApprove !== false;
+      let approvalPatch: Partial<Post> = {};
+      if (shouldApprove) {
+        const hash = computePostContentHash({
+          postId: post.id,
+          title: post.title,
+          description: post.description,
+          hashtags: post.hashtags,
+          imageUrl: post.image_url,
+          pageId,
+          linkUrl: post.link_url,
+          utmSuffix: settings.utm_suffix,
+        });
+        approvalPatch = {
+          approved_by_user: true,
+          approved_at: new Date().toISOString(),
+          approval_content_hash: hash,
+        };
+      }
+
       const updated = await updatePostRecord(post.id, {
         scheduled_at: parsed.data.scheduledAt,
+        scheduled_timezone: resolvedTz,
         status: "scheduled",
         schedule_notes: parsed.data.scheduleNotes ?? post.schedule_notes ?? null,
         error_message: null,
+        ...approvalPatch,
       });
 
       return json({ ok: true, post: updated });
     }
+
 
     // posts/<id>/cancel-schedule — revert scheduled post to draft
     if (path.length === 3 && path[0] === "posts" && path[2] === "cancel-schedule") {
@@ -1110,7 +1217,10 @@ export async function POST(req: Request, ctx: Ctx) {
 
       const updated = await updatePostRecord(post.id, {
         scheduled_at: null,
+        scheduled_timezone: null,
         status: "draft",
+        approved_by_user: false,
+        approval_content_hash: null,
       });
 
       return json({ ok: true, post: updated });
@@ -1379,12 +1489,13 @@ export async function POST(req: Request, ctx: Ctx) {
                 linkUrl: existingPost.link_url,
                 utmSuffix: settings.utm_suffix,
               });
+              const reviewUrl = buildDashboardReviewUrl(existingPost.id, req);
               return {
                 status: 200,
                 body: {
                   postId: existingPost.id,
                   requestId: linkedRequest.id,
-                  status: existingPost.status === "draft" ? "pending_review" : existingPost.status,
+                  status: existingPost.status === "draft" ? (existingPost.approved_by_user ? "approved" : "pending_review") : existingPost.status,
                   topic: existingPost.topic,
                   title: existingPost.title,
                   description: existingPost.description,
@@ -1392,9 +1503,11 @@ export async function POST(req: Request, ctx: Ctx) {
                   imageUrl: existingPost.image_url,
                   pageId: existingPost.page_id,
                   pageName: existingPost.page_name,
+                  scheduledAt: existingPost.scheduled_at,
+                  scheduledTimezone: existingPost.scheduled_timezone || null,
                   contentHash,
-                  reviewUrl: linkedRequest.review_url || `/dashboard/queue?post=${existingPost.id}`,
-                  approvalRequired: true,
+                  reviewUrl,
+                  approvalRequired: !existingPost.approved_by_user,
                   message: "Draft already created for this content request. Returned existing draft.",
                 },
               };
@@ -1444,12 +1557,21 @@ export async function POST(req: Request, ctx: Ctx) {
               linkUrl: existing.link_url,
               utmSuffix: settings.utm_suffix,
             });
+            const reviewUrl = buildDashboardReviewUrl(existing.id, req);
+            const isApproved = Boolean(existing.approved_by_user);
+            let authoritativeStatus: PostStatus = existing.status;
+            if (existing.status === "draft") {
+              authoritativeStatus = isApproved
+                ? (existing.scheduled_at ? "scheduled" : "approved")
+                : "pending_review";
+            }
+
             return {
               status: 200,
               body: {
                 postId: existing.id,
                 requestId: b.requestId || undefined,
-                status: existing.status === "draft" ? "pending_review" : existing.status,
+                status: authoritativeStatus,
                 title: existing.title,
                 description: existing.description,
                 hashtags: existing.hashtags,
@@ -1457,11 +1579,15 @@ export async function POST(req: Request, ctx: Ctx) {
                 pageId: existing.page_id,
                 pageName: existing.page_name,
                 contentHash,
-                reviewUrl: `/dashboard/queue?post=${existing.id}`,
-                approvalRequired: true,
+                reviewUrl,
+                scheduledAt: existing.scheduled_at,
+                scheduledTimezone: existing.scheduled_timezone || null,
+                approvalRequired: !isApproved,
                 message:
                   "Existing post returned for idempotency key. Please display the complete preview to the user. " +
-                  "Ask: 'Do you approve publishing this post to Facebook?' and wait for explicit confirmation in the next turn before calling approve.",
+                  (isApproved
+                    ? "Post is already approved."
+                    : "Ask: 'Do you approve publishing this post to Facebook?' and wait for explicit confirmation in the next turn before calling approve."),
               },
             };
           }
@@ -1550,6 +1676,36 @@ export async function POST(req: Request, ctx: Ctx) {
             };
           }
 
+          let initialScheduledAt: string | null = null;
+          let initialTimezone: string | null = null;
+          if (b.scheduledAt) {
+            const parsedDate = new Date(b.scheduledAt);
+            if (isNaN(parsedDate.getTime())) {
+              return {
+                status: 400,
+                body: { error: "Invalid scheduledAt format. Expected ISO-8601 date string." },
+              };
+            }
+            if (parsedDate.getTime() <= Date.now()) {
+              return {
+                status: 400,
+                body: { error: "scheduledAt must be a future date and time." },
+              };
+            }
+            initialScheduledAt = parsedDate.toISOString();
+            if (b.timezone) {
+              if (!isValidTimezone(b.timezone)) {
+                return {
+                  status: 400,
+                  body: { error: `Invalid timezone '${b.timezone}'. Provide a valid IANA timezone (e.g. 'Asia/Kolkata', 'UTC').` },
+                };
+              }
+              initialTimezone = normalizeTimezone(b.timezone);
+            } else {
+              initialTimezone = "UTC";
+            }
+          }
+
           const post = await createPostRecord({
             topic: postTopic,
             title: b.title,
@@ -1560,7 +1716,9 @@ export async function POST(req: Request, ctx: Ctx) {
             link_url: null,
             page_id: targetPage.page_id,
             page_name: destinationPageName,
-            scheduled_at: null,
+            scheduled_at: initialScheduledAt,
+            scheduled_timezone: initialTimezone,
+            schedule_notes: b.scheduleNotes || (initialTimezone ? `[tz:${initialTimezone}]` : null),
             status: "draft",
           });
 
@@ -1572,6 +1730,8 @@ export async function POST(req: Request, ctx: Ctx) {
               targetPageName: destinationPageName,
               topic: postTopic,
               requestId: b.requestId ?? null,
+              scheduledAt: initialScheduledAt,
+              timezone: initialTimezone,
             })
           );
 
@@ -1586,7 +1746,7 @@ export async function POST(req: Request, ctx: Ctx) {
             utmSuffix: settings.utm_suffix,
           });
 
-          const reviewUrl = `/dashboard/queue?post=${post.id}`;
+          const reviewUrl = buildDashboardReviewUrl(post.id, req);
           if (b.requestId) {
             try {
               await markContentRequestDraftCreated(b.requestId, post.id, reviewUrl);
@@ -1610,9 +1770,14 @@ export async function POST(req: Request, ctx: Ctx) {
               pageName: post.page_name,
               contentHash,
               reviewUrl,
+              scheduledAt: post.scheduled_at,
+              scheduledTimezone: post.scheduled_timezone || initialTimezone || null,
               approvalRequired: true,
               message:
-                "Post staged and awaiting explicit user review. Please display the complete image preview and caption to the user. " +
+                "Post staged and awaiting explicit user review. Please display the complete image preview, target Page, and caption to the user. " +
+                (post.scheduled_at
+                  ? `Requested schedule: ${post.scheduled_at} (${post.scheduled_timezone || "UTC"}). `
+                  : "") +
                 "Ask: 'Do you approve publishing this post to Facebook?' and wait for explicit confirmation in the next turn before calling approve. " +
                 "Alternatively, the user can review and approve directly in the authenticated dashboard at reviewUrl.",
             },
@@ -1639,15 +1804,21 @@ export async function POST(req: Request, ctx: Ctx) {
                 linkUrl: existingAfterConflict.link_url,
                 utmSuffix: settings.utm_suffix,
               });
+              const reviewUrl = buildDashboardReviewUrl(existingAfterConflict.id, req);
+              const isApproved = Boolean(existingAfterConflict.approved_by_user);
+              let authoritativeStatus: PostStatus = existingAfterConflict.status;
+              if (existingAfterConflict.status === "draft") {
+                authoritativeStatus = isApproved
+                  ? (existingAfterConflict.scheduled_at ? "scheduled" : "approved")
+                  : "pending_review";
+              }
+
               return {
                 status: 200,
                 body: {
                   postId: existingAfterConflict.id,
                   requestId: b.requestId || undefined,
-                  status:
-                    existingAfterConflict.status === "draft"
-                      ? "pending_review"
-                      : existingAfterConflict.status,
+                  status: authoritativeStatus,
                   title: existingAfterConflict.title,
                   description: existingAfterConflict.description,
                   hashtags: existingAfterConflict.hashtags,
@@ -1655,8 +1826,10 @@ export async function POST(req: Request, ctx: Ctx) {
                   pageId: existingAfterConflict.page_id,
                   pageName: existingAfterConflict.page_name,
                   contentHash,
-                  reviewUrl: `/dashboard/queue?post=${existingAfterConflict.id}`,
-                  approvalRequired: true,
+                  reviewUrl,
+                  scheduledAt: existingAfterConflict.scheduled_at,
+                  scheduledTimezone: existingAfterConflict.scheduled_timezone || null,
+                  approvalRequired: !isApproved,
                   message:
                     "Existing post returned for idempotency key. Please review preview with user before approving.",
                 },
@@ -1776,12 +1949,45 @@ export async function POST(req: Request, ctx: Ctx) {
         );
       }
 
-      // Record human user approval in the database (persisting approval state)
+      let targetScheduledAt = post.scheduled_at;
+      let targetTimezone = post.scheduled_timezone;
+      let scheduleUpdate: { scheduled_at?: string | null; scheduled_timezone?: string | null; schedule_notes?: string | null } = {};
+
+      if (parsed.data.scheduledAt) {
+        const parsedDate = new Date(parsed.data.scheduledAt);
+        if (isNaN(parsedDate.getTime())) {
+          return json({ error: "Invalid scheduledAt format. Expected ISO-8601 date string." }, 400);
+        }
+        if (parsedDate.getTime() <= Date.now()) {
+          return json({ error: "scheduledAt must be a future date and time." }, 400);
+        }
+        targetScheduledAt = parsedDate.toISOString();
+        if (parsed.data.timezone) {
+          if (!isValidTimezone(parsed.data.timezone)) {
+            return json({ error: `Invalid timezone '${parsed.data.timezone}'. Provide a valid IANA timezone (e.g. 'Asia/Kolkata', 'UTC').` }, 400);
+          }
+          targetTimezone = normalizeTimezone(parsed.data.timezone);
+        } else if (!targetTimezone) {
+          targetTimezone = "UTC";
+        }
+        scheduleUpdate.scheduled_at = targetScheduledAt;
+        scheduleUpdate.scheduled_timezone = targetTimezone;
+        scheduleUpdate.schedule_notes = parsed.data.scheduleNotes || (targetTimezone ? `[tz:${targetTimezone}]` : null);
+      }
+
+      const hasFutureSchedule = Boolean(targetScheduledAt && new Date(targetScheduledAt).getTime() > Date.now());
+      const nextStatus: PostStatus = hasFutureSchedule ? "scheduled" : "approved";
+
+      // Record human user approval in the database (persisting approval state and updating status)
       await updatePostRecord(post.id, {
         approved_by_user: true,
         approved_at: new Date().toISOString(),
         approval_content_hash: currentHash,
+        status: nextStatus,
+        ...scheduleUpdate,
       });
+
+      const reviewUrl = buildDashboardReviewUrl(post.id, req);
 
       try {
         const { token, expiresAt } = await issueApprovalToken({
@@ -1798,18 +2004,25 @@ export async function POST(req: Request, ctx: Ctx) {
             pageName: post.page_name,
             contentHash: currentHash,
             userConfirmed: true,
+            status: nextStatus,
+            scheduledAt: targetScheduledAt,
+            scheduledTimezone: targetTimezone,
           })
         );
 
         return json({
           approved: true,
           postId: post.id,
+          status: nextStatus,
           contentHash: currentHash,
           approvalToken: token,
           expiresAt: new Date(expiresAt).toISOString(),
-          reviewUrl: `/dashboard/queue?post=${post.id}`,
-          message:
-            "Post explicitly approved by user. You may now call POST /api/chatgpt/posts/{id}/publish with this single-use approvalToken before it expires (10 minutes).",
+          reviewUrl,
+          scheduledAt: targetScheduledAt || null,
+          scheduledTimezone: targetTimezone || null,
+          message: hasFutureSchedule
+            ? `Post approved and scheduled for ${targetScheduledAt} (${targetTimezone || "UTC"}). It will be automatically published at the scheduled time.`
+            : "Post explicitly approved by user. You may now call POST /api/chatgpt/posts/{id}/publish with this single-use approvalToken before it expires (10 minutes).",
         });
       } catch (err) {
         if (err instanceof StoragePersistenceError) {
@@ -1997,6 +2210,145 @@ export async function POST(req: Request, ctx: Ctx) {
       }
     }
 
+    // chatgpt/posts/<id>/schedule — explicit ChatGPT scheduling action
+    if (path.length === 4 && path[0] === "chatgpt" && path[1] === "posts" && path[3] === "schedule") {
+      const id = path[2];
+      const post = await getPost(id);
+      if (!post) return notFound();
+
+      if (post.status === "posted") {
+        return json({ error: "Post has already been published to Facebook." }, 400);
+      }
+      if (post.status === "publishing") {
+        return json({ error: "Post is currently being published by another request." }, 409);
+      }
+
+      const parsed = ScheduleChatGPTPostBody.safeParse(await req.json().catch(() => null));
+      if (!parsed.success) {
+        return json(
+          { error: parsed.error.issues[0]?.message || "A valid scheduledAt ISO datetime string is required." },
+          400
+        );
+      }
+
+      const parsedDate = new Date(parsed.data.scheduledAt);
+      if (isNaN(parsedDate.getTime())) {
+        return json({ error: "Invalid scheduledAt format. Expected ISO-8601 date string." }, 400);
+      }
+      if (parsedDate.getTime() <= Date.now()) {
+        return json({ error: "Cannot schedule a post for a past or current time. scheduledAt must be in the future." }, 400);
+      }
+
+      const pageId = post.page_id;
+      if (!pageId) {
+        return json({ error: "Destination Facebook Page is not assigned to this post. Please assign a destination Page before scheduling." }, 409);
+      }
+
+      const settings = await getSettings();
+      let resolvedTz = post.scheduled_timezone || settings.timezone || DEFAULT_TIMEZONE;
+      if (parsed.data.timezone) {
+        if (!isValidTimezone(parsed.data.timezone)) {
+          return json({ error: `Invalid timezone '${parsed.data.timezone}'. Provide a valid IANA timezone name (e.g. 'Asia/Kolkata', 'UTC').` }, 400);
+        }
+        resolvedTz = normalizeTimezone(parsed.data.timezone);
+      }
+
+      let isApproved = Boolean(post.approved_by_user);
+      let approvedAt = post.approved_at;
+      let approvalContentHash = post.approval_content_hash;
+
+      if (parsed.data.userConfirmed) {
+        const currentHash = computePostContentHash({
+          postId: post.id,
+          title: post.title,
+          description: post.description,
+          hashtags: post.hashtags,
+          imageUrl: post.image_url,
+          pageId,
+          linkUrl: post.link_url,
+          utmSuffix: settings.utm_suffix,
+        });
+
+        if (parsed.data.contentHash && parsed.data.contentHash !== currentHash) {
+          return json({ error: "Content hash mismatch. Post content has been modified since review." }, 400);
+        }
+
+        isApproved = true;
+        approvedAt = new Date().toISOString();
+        approvalContentHash = currentHash;
+      }
+
+      const nextStatus: PostStatus = isApproved ? "scheduled" : "draft";
+
+      let resolvedNotes = parsed.data.scheduleNotes ?? post.schedule_notes ?? null;
+      if (resolvedNotes && resolvedTz) {
+        resolvedNotes = resolvedNotes.replace(/\[tz:[^\]]+\]\s*/g, "").trim();
+        resolvedNotes = `[tz:${resolvedTz}] ${resolvedNotes}`.trim();
+      } else if (!resolvedNotes && resolvedTz) {
+        resolvedNotes = `[tz:${resolvedTz}]`;
+      }
+
+      const updated = await updatePostRecord(post.id, {
+        scheduled_at: parsedDate.toISOString(),
+        scheduled_timezone: resolvedTz,
+        schedule_notes: resolvedNotes || null,
+        status: nextStatus,
+        ...(isApproved ? { approved_by_user: true, approved_at: approvedAt, approval_content_hash: approvalContentHash } : {}),
+        error_message: null,
+      });
+
+      const reviewUrl = buildDashboardReviewUrl(post.id, req);
+
+      return json({
+        ok: true,
+        postId: updated.id,
+        status: isApproved ? "scheduled" : "pending_review",
+        scheduledAt: updated.scheduled_at,
+        scheduledTimezone: updated.scheduled_timezone,
+        approved: isApproved,
+        reviewUrl,
+        message: isApproved
+          ? `Post successfully scheduled for publication at ${updated.scheduled_at} (${resolvedTz}).`
+          : `Scheduled time recorded for ${updated.scheduled_at} (${resolvedTz}). Post remains pending approval. Explicit user confirmation is required before publication.`,
+      });
+    }
+
+    // chatgpt/posts/<id>/cancel-schedule — ChatGPT cancel schedule action
+    if (path.length === 4 && path[0] === "chatgpt" && path[1] === "posts" && path[3] === "cancel-schedule") {
+      const id = path[2];
+      const post = await getPost(id);
+      if (!post) return notFound();
+
+      if (post.status === "posted") {
+        return json({ error: "Cannot cancel schedule of an already-published post." }, 400);
+      }
+      if (post.status === "publishing") {
+        return json({ error: "Cannot cancel schedule while publishing is in progress." }, 409);
+      }
+
+      let cleanNotes = post.schedule_notes ? post.schedule_notes.replace(/\[tz:[^\]]+\]\s*/g, "").trim() : null;
+      cleanNotes = cleanNotes || null;
+
+      const nextStatus: PostStatus = post.approved_by_user ? "approved" : "draft";
+      const updated = await updatePostRecord(post.id, {
+        scheduled_at: null,
+        scheduled_timezone: null,
+        schedule_notes: cleanNotes,
+        status: nextStatus,
+        error_message: null,
+      });
+
+      return json({
+        ok: true,
+        postId: updated.id,
+        status: updated.approved_by_user ? "approved" : "pending_review",
+        scheduledAt: null,
+        scheduledTimezone: null,
+        reviewUrl: buildDashboardReviewUrl(post.id, req),
+        message: "Scheduled publication cancelled. Post has returned to draft/approved state.",
+      });
+    }
+
     if (route === "facebook/disconnect") {
       const current = await getSettings().catch(() => null);
       if (current?.facebook_user_token) {
@@ -2093,8 +2445,11 @@ const UpdatePostBody = z.object({
   pageId: z.string().min(1).optional(),
   pageName: z.string().min(1).optional(),
   scheduledAt: z.string().datetime().nullable().optional(),
-  status: z.enum(["draft", "scheduled"]).optional(),
+  timezone: z.string().max(100).optional(),
+  status: z.enum(["draft", "scheduled", "approved", "failed"]).optional(),
+  approve: z.boolean().optional(),
 });
+
 
 export async function PATCH(req: Request, ctx: Ctx) {
   const { path } = await ctx.params;
@@ -2157,6 +2512,12 @@ export async function PATCH(req: Request, ctx: Ctx) {
       if (!parsed.success) return json({ error: "Invalid update payload." }, 400);
       const b = parsed.data;
 
+      if (b.scheduledAt !== undefined && b.scheduledAt !== null) {
+        if (new Date(b.scheduledAt).getTime() <= Date.now()) {
+          return json({ error: "Cannot schedule a post for an invalid or past time." }, 400);
+        }
+      }
+
       let validatedPageId = b.pageId;
       let validatedPageName = b.pageName;
       if (b.pageId !== undefined || b.pageName !== undefined) {
@@ -2168,12 +2529,45 @@ export async function PATCH(req: Request, ctx: Ctx) {
         validatedPageName = resolved.page.name;
       }
 
+      let validatedTimezone = existing.scheduled_timezone;
+      if (b.timezone !== undefined) {
+        if (!isValidTimezone(b.timezone)) {
+          return json({ error: `Invalid timezone '${b.timezone}'. Provide a valid IANA timezone name.` }, 400);
+        }
+        validatedTimezone = normalizeTimezone(b.timezone);
+      }
+
+      const isScheduling = b.scheduledAt !== undefined && b.scheduledAt !== null;
+      const shouldApproveOnSchedule = isScheduling && b.approve !== false;
+
+      let scheduleApprovalPatch: Partial<Post> = {};
+      if (shouldApproveOnSchedule && (existing.image_url && (validatedPageId || existing.page_id))) {
+        const settings = await getSettings();
+        const effectivePageId = validatedPageId || existing.page_id || "";
+        const hash = computePostContentHash({
+          postId: existing.id,
+          title: b.title !== undefined ? b.title : existing.title,
+          description: b.description !== undefined ? b.description : existing.description,
+          hashtags: b.hashtags !== undefined ? b.hashtags : existing.hashtags,
+          imageUrl: existing.image_url,
+          pageId: effectivePageId,
+          linkUrl: b.linkUrl !== undefined ? (b.linkUrl || null) : (existing.link_url || null),
+          utmSuffix: settings.utm_suffix,
+        });
+        scheduleApprovalPatch = {
+          approved_by_user: true,
+          approved_at: new Date().toISOString(),
+          approval_content_hash: hash,
+        };
+      }
+
       const contentChanged =
-        (b.title !== undefined && b.title !== existing.title) ||
+        !shouldApproveOnSchedule &&
+        ((b.title !== undefined && b.title !== existing.title) ||
         (b.description !== undefined && b.description !== existing.description) ||
         (b.hashtags !== undefined && JSON.stringify(b.hashtags) !== JSON.stringify(existing.hashtags)) ||
         (b.linkUrl !== undefined && (b.linkUrl || null) !== (existing.link_url || null)) ||
-        (validatedPageId !== undefined && validatedPageId !== existing.page_id);
+        (validatedPageId !== undefined && validatedPageId !== existing.page_id));
 
       const updated = await updatePostRecord(id, {
         ...(b.title !== undefined && { title: b.title }),
@@ -2183,16 +2577,19 @@ export async function PATCH(req: Request, ctx: Ctx) {
         ...(validatedPageId !== undefined && { page_id: validatedPageId }),
         ...(validatedPageName !== undefined && { page_name: validatedPageName }),
         ...(b.scheduledAt !== undefined && { scheduled_at: b.scheduledAt }),
+        ...(b.timezone !== undefined && { scheduled_timezone: validatedTimezone }),
         ...(b.status !== undefined && { status: b.status }),
         ...(contentChanged && {
           approved_by_user: false,
           approved_at: null,
           approval_content_hash: null,
         }),
+        ...scheduleApprovalPatch,
       });
 
       return json({ post: updated });
     }
+
 
     return notFound();
   });
@@ -2392,12 +2789,16 @@ async function oauthCallback(req: Request, url: URL) {
  */
 async function runCron(req: Request, url: URL) {
   if (env.cronSecret) {
-    const auth = req.headers.get("authorization");
-    const provided = url.searchParams.get("secret");
-    if (auth !== `Bearer ${env.cronSecret}` && provided !== env.cronSecret) {
-      return json({ error: "Unauthorized" }, 401);
+    const isSessionAuthed = await hasSession(req);
+    if (!isSessionAuthed) {
+      const auth = req.headers.get("authorization");
+      const provided = url.searchParams.get("secret");
+      if (auth !== `Bearer ${env.cronSecret}` && provided !== env.cronSecret) {
+        return json({ error: "Unauthorized" }, 401);
+      }
     }
   }
+
 
   const nowParam = url.searchParams.get("now");
   const dryRunParam =

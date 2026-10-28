@@ -1675,7 +1675,7 @@ async function runTests() {
     assert.strictEqual(body.approvalRequired, true);
     assert.ok(body.postId, "Must return postId");
     assert.ok(body.contentHash && body.contentHash.length === 64, "Must return 64-char sha256 contentHash");
-    assert.ok(body.reviewUrl.startsWith("/dashboard/queue?post="), "Must return reviewUrl pointing to dashboard review");
+    assert.ok(body.reviewUrl.includes("/dashboard/queue?post=") && body.reviewUrl.startsWith("http"), "Must return absolute reviewUrl pointing to dashboard review");
     assert.strictEqual(body.imageUrl, hostedSupabaseUrl);
   });
 

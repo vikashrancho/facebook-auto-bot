@@ -210,3 +210,59 @@ export function isSameDayInTimezone(
 ): boolean {
   return getDateKeyInTimezone(d1, timeZone) === getDateKeyInTimezone(d2, timeZone);
 }
+
+const COMMON_TIMEZONE_ALIASES: Record<string, string> = {
+  IST: "Asia/Kolkata",
+  PKT: "Asia/Karachi",
+  UTC: "UTC",
+  GMT: "UTC",
+  EST: "America/New_York",
+  EDT: "America/New_York",
+  CST: "America/Chicago",
+  CDT: "America/Chicago",
+  MST: "America/Denver",
+  MDT: "America/Denver",
+  PST: "America/Los_Angeles",
+  PDT: "America/Los_Angeles",
+  BST: "Europe/London",
+  CET: "Europe/Paris",
+  CEST: "Europe/Paris",
+  JST: "Asia/Tokyo",
+  AEST: "Australia/Sydney",
+  AEDT: "Australia/Sydney",
+  SGT: "Asia/Singapore",
+  GST: "Asia/Dubai",
+};
+
+/**
+ * Validates whether a timezone identifier is supported by Intl.
+ */
+export function isValidTimezone(tz: string): boolean {
+  if (!tz || typeof tz !== "string") return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Normalizes user/ChatGPT-supplied timezone string (e.g. "IST", "Asia/Kolkata") into a valid IANA timezone.
+ * Throws an Error if the timezone is invalid.
+ */
+export function normalizeTimezone(rawTz?: string | null, fallback = DEFAULT_TIMEZONE): string {
+  if (!rawTz || !rawTz.trim()) return fallback;
+  const trimmed = rawTz.trim();
+  const aliasMatch = COMMON_TIMEZONE_ALIASES[trimmed.toUpperCase()];
+  if (aliasMatch && isValidTimezone(aliasMatch)) {
+    return aliasMatch;
+  }
+  if (isValidTimezone(trimmed)) {
+    return trimmed;
+  }
+  throw new Error(
+    `Invalid timezone: '${rawTz}'. Please supply a valid IANA timezone (e.g. 'Asia/Kolkata', 'UTC', 'America/New_York') or abbreviation (e.g. 'IST').`
+  );
+}
+

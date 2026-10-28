@@ -458,6 +458,150 @@
         }
       }
     },
+    "/api/chatgpt/posts/{id}/schedule": {
+      "post": {
+        "operationId": "scheduleChatGPTPost",
+        "summary": "Schedule or reschedule a staged post for automatic publication",
+        "description": "Schedules a post for future automatic publication at scheduledAt (ISO-8601). If userConfirmed is provided with matching contentHash, also records user approval. Scheduled posts will be automatically published by the background worker at the scheduled time.",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Internal UUID of the post to schedule",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulePostRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Post scheduled successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulePostResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid scheduledAt format, past timestamp, or content hash mismatch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Post not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Post is currently being published or target page not assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chatgpt/posts/{id}/cancel-schedule": {
+      "post": {
+        "operationId": "cancelScheduledChatGPTPost",
+        "summary": "Cancel scheduled automatic publication of a post",
+        "description": "Cancels scheduled publication of a post, returning it to draft or approved state without deleting the post.",
+        "x-openai-isConsequential": true,
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Internal UUID of the scheduled post",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Scheduled publication cancelled successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelScheduleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Post already published or cannot cancel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid Bearer API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Post not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chatgpt/requests/{requestId}": {
       "get": {
         "operationId": "getChatGPTContentRequest",
@@ -880,6 +1024,22 @@
             "type": "string",
             "description": "Alias for pageName or pageId.",
             "example": "Sample Niche Page"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional future ISO-8601 date-time to stage this post for scheduled publication.",
+            "example": "2026-10-22T18:00:00+05:30"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Optional IANA timezone name (e.g. 'Asia/Kolkata', 'America/New_York', 'UTC').",
+            "example": "Asia/Kolkata"
+          },
+          "scheduleNotes": {
+            "type": "string",
+            "description": "Optional notes or reminders regarding the scheduled publication time.",
+            "example": "Scheduled for evening devotion"
           }
         }
       },
@@ -956,14 +1116,28 @@
             "description": "Deterministic SHA-256 hash of post copy, image, and target Page. Must be supplied when requesting approval.",
             "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Requested scheduled publication time (ISO-8601).",
+            "example": "2026-10-22T18:00:00.000Z"
+          },
+          "scheduledTimezone": {
+            "type": "string",
+            "nullable": true,
+            "description": "Target timezone for scheduled publication.",
+            "example": "Asia/Kolkata"
+          },
           "approvalRequired": {
             "type": "boolean",
             "example": true
           },
           "reviewUrl": {
             "type": "string",
-            "description": "Authenticated dashboard URL where the human owner can directly review and inspect the staged post.",
-            "example": "/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            "format": "uri",
+            "description": "Absolute authenticated dashboard URL where the human owner can directly review and inspect the staged post.",
+            "example": "https://fbautopost.vetechno.in/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
           },
           "message": {
             "type": "string",
@@ -984,6 +1158,22 @@
             "type": "string",
             "description": "The exact contentHash returned when the post was staged.",
             "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optional future ISO-8601 date-time to schedule publication as part of approval.",
+            "example": "2026-10-22T18:00:00+05:30"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Optional IANA timezone name (e.g. 'Asia/Kolkata', 'America/New_York', 'UTC').",
+            "example": "Asia/Kolkata"
+          },
+          "scheduleNotes": {
+            "type": "string",
+            "description": "Optional notes or reminders regarding the scheduled publication time.",
+            "example": "Scheduled for evening devotion"
           },
           "expectedPageId": {
             "type": "string",
@@ -1010,6 +1200,12 @@
             "format": "uuid",
             "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
           },
+          "status": {
+            "type": "string",
+            "enum": ["approved", "scheduled"],
+            "description": "Updated workflow status: 'scheduled' if scheduledAt was provided or already set, else 'approved'.",
+            "example": "scheduled"
+          },
           "contentHash": {
             "type": "string",
             "description": "The verified content hash that this approval and approvalToken bind to.",
@@ -1025,14 +1221,139 @@
             "format": "date-time",
             "example": "2026-10-16T10:40:00.000Z"
           },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "example": "2026-10-22T18:00:00.000Z"
+          },
+          "scheduledTimezone": {
+            "type": "string",
+            "nullable": true,
+            "example": "Asia/Kolkata"
+          },
           "reviewUrl": {
             "type": "string",
-            "description": "Authenticated dashboard URL for the post.",
-            "example": "/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            "format": "uri",
+            "description": "Absolute authenticated dashboard URL for the post.",
+            "example": "https://fbautopost.vetechno.in/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
           },
           "message": {
             "type": "string",
-            "example": "Post explicitly approved by user. You may now call POST /api/chatgpt/posts/{id}/publish with this single-use approvalToken before it expires (10 minutes)."
+            "example": "Post approved and scheduled for publication at 2026-10-22T18:00:00.000Z."
+          }
+        }
+      },
+      "SchedulePostRequest": {
+        "type": "object",
+        "required": ["scheduledAt"],
+        "properties": {
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Required future ISO-8601 date-time to schedule publication.",
+            "example": "2026-10-22T18:00:00+05:30"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "Optional IANA timezone name (e.g. 'Asia/Kolkata', 'America/New_York', 'UTC').",
+            "example": "Asia/Kolkata"
+          },
+          "scheduleNotes": {
+            "type": "string",
+            "description": "Optional notes or reminders regarding the scheduled publication time.",
+            "example": "Scheduled for evening devotion"
+          },
+          "userConfirmed": {
+            "type": "boolean",
+            "description": "Optional: set to true to approve and schedule in one operation.",
+            "example": true
+          },
+          "contentHash": {
+            "type": "string",
+            "description": "Required if userConfirmed is true: the contentHash of the staged post.",
+            "example": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      },
+      "SchedulePostResponse": {
+        "type": "object",
+        "required": ["ok", "postId", "status", "scheduledAt", "reviewUrl", "message"],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "postId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["draft", "pending_review", "approved", "scheduled"],
+            "example": "scheduled"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-22T12:30:00.000Z"
+          },
+          "scheduledTimezone": {
+            "type": "string",
+            "nullable": true,
+            "example": "Asia/Kolkata"
+          },
+          "approved": {
+            "type": "boolean",
+            "example": true
+          },
+          "reviewUrl": {
+            "type": "string",
+            "format": "uri",
+            "example": "https://fbautopost.vetechno.in/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "message": {
+            "type": "string",
+            "example": "Post successfully scheduled for publication at 2026-10-22T12:30:00.000Z (Asia/Kolkata)."
+          }
+        }
+      },
+      "CancelScheduleResponse": {
+        "type": "object",
+        "required": ["ok", "postId", "status", "reviewUrl", "message"],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "postId": {
+            "type": "string",
+            "format": "uuid",
+            "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "status": {
+            "type": "string",
+            "example": "approved"
+          },
+          "scheduledAt": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "scheduledTimezone": {
+            "type": "string",
+            "nullable": true,
+            "example": null
+          },
+          "reviewUrl": {
+            "type": "string",
+            "format": "uri",
+            "example": "https://fbautopost.vetechno.in/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
+          },
+          "message": {
+            "type": "string",
+            "example": "Scheduled publication cancelled. Post has returned to draft/approved state."
           }
         }
       },
@@ -1182,10 +1503,15 @@
           },
           "reviewUrl": {
             "type": "string",
-            "description": "Authenticated dashboard URL for human review of this post.",
-            "example": "/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            "format": "uri",
+            "description": "Absolute authenticated dashboard URL for human review of this post.",
+            "example": "https://fbautopost.vetechno.in/dashboard/queue?post=3fa85f64-5717-4562-b3fc-2c963f66afa6"
           },
           "approvedByUser": {
+            "type": "boolean",
+            "description": "Indicates whether this post has already received explicit user approval."
+          },
+          "approved": {
             "type": "boolean",
             "description": "Indicates whether this post has already received explicit user approval."
           },
@@ -1193,6 +1519,17 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "scheduledAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "ISO-8601 timestamp for scheduled publication."
+          },
+          "scheduledTimezone": {
+            "type": "string",
+            "nullable": true,
+            "description": "Original IANA timezone for the scheduled publication."
           },
           "isContentUnchangedSinceApproval": {
             "type": "boolean",

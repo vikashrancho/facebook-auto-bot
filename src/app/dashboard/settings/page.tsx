@@ -13,6 +13,8 @@ import {
   Key,
   Copy,
   Check,
+  ClockCountdown,
+  Rocket,
 } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -60,15 +62,19 @@ function SettingsForm() {
   const [configId, setConfigId] = useState("");
   const [savingCreds, setSavingCreds] = useState(false);
   const [credsError, setCredsError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<"uri" | "domain" | null>(null);
+  const [copied, setCopied] = useState<"uri" | "domain" | "cron" | null>(null);
   // Read from the browser rather than configured, so they always match the
   // hostname the user is actually on — the values Facebook compares against.
   const [redirectUri, setRedirectUri] = useState("");
   const [appDomain, setAppDomain] = useState("");
+  const [cronUrl, setCronUrl] = useState("");
+  const [runningCron, setRunningCron] = useState(false);
+  const [cronResult, setCronResult] = useState<string | null>(null);
 
   useEffect(() => {
     setRedirectUri(`${window.location.origin}/api/facebook/oauth/callback`);
     setAppDomain(window.location.hostname);
+    setCronUrl(`${window.location.origin}/api/cron/process-queue`);
   }, []);
 
   const oauthStatus = params.get("facebook");
@@ -471,6 +477,109 @@ function SettingsForm() {
           <p className="mt-1.5 text-xs text-muted-foreground">
             When configured, the &ldquo;Open Custom GPT&rdquo; button in the Generate dashboard will launch this assistant directly.
           </p>
+        </div>
+      </Card>
+
+      {/* Background Scheduler & Webhook */}
+      <Card>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-heading font-bold text-foreground">Scheduled Posts Background Worker</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              How scheduled posts are monitored and automatically published when their time arrives.
+            </p>
+          </div>
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-success/15 px-2.5 py-1 text-xs font-semibold text-success">
+            <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+            Worker active
+          </span>
+        </div>
+
+        <div className="mt-4 space-y-4 text-xs">
+          <div className="rounded-xl border border-border bg-surface-2/50 p-3.5 space-y-2">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <CheckCircle size={16} className="text-success shrink-0" />
+              <span>Real-Time Browser Scheduler (Active)</span>
+            </div>
+            <p className="text-muted-foreground leading-relaxed">
+              While any dashboard tab is open in your browser, the internal background worker polls every 60 seconds (and immediately when refocusing tabs). Any due scheduled posts are automatically dispatched to Facebook without needing manual intervention.
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-border bg-surface-2/50 p-3.5 space-y-3">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <ClockCountdown size={16} className="text-primary shrink-0" />
+              <span>Unattended 24/7 Publishing (When Browser Is Closed)</span>
+            </div>
+            <p className="text-muted-foreground leading-relaxed">
+              To publish scheduled posts even when your computer is asleep or no browser tab is open, configure a free recurring ping (every 5 to 10 minutes) with a cron service like <strong className="text-foreground">cron-job.org</strong>, <strong className="text-foreground">GitHub Actions</strong>, or <strong className="text-foreground">Vercel Cron</strong> to call this endpoint:
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={cronUrl}
+                className="flex-1 rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1.5"
+                onClick={() => {
+                  navigator.clipboard.writeText(cronUrl);
+                  setCopied("cron");
+                  setTimeout(() => setCopied(null), 2000);
+                }}
+              >
+                {copied === "cron" ? <Check size={14} /> : <Copy size={14} />}
+                {copied === "cron" ? "Copied" : "Copy URL"}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Note: If your environment has a <code className="rounded bg-surface-2 px-1 font-mono text-[11px]">CRON_SECRET</code> configured, supply it via header <code className="rounded bg-surface-2 px-1 font-mono text-[11px]">Authorization: Bearer &lt;CRON_SECRET&gt;</code> or URL parameter <code className="rounded bg-surface-2 px-1 font-mono text-[11px]">?secret=&lt;CRON_SECRET&gt;</code>.
+            </p>
+          </div>
+
+          <div className="pt-1 flex flex-wrap items-center justify-between gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={runningCron}
+              onClick={async () => {
+                setRunningCron(true);
+                setCronResult(null);
+                try {
+                  const res = await fetch("/api/cron/process-queue", { method: "POST" });
+                  const data = await res.json();
+                  if (res.ok) {
+                    setCronResult(
+                      `Success: Processed ${data.processedFromQueue ?? 0} due post(s).`
+                    );
+                    if (typeof window !== "undefined") {
+                      window.dispatchEvent(new CustomEvent("pab:posts-updated", { detail: data }));
+                    }
+                  } else {
+                    setCronResult(`Error: ${data.error ?? "Failed to run scheduler"}`);
+                  }
+                } catch (e) {
+                  setCronResult(e instanceof Error ? e.message : "Network error");
+                } finally {
+                  setRunningCron(false);
+                }
+              }}
+              className="gap-1.5"
+            >
+              <Rocket size={14} />
+              {runningCron ? "Running Scheduler Check…" : "Run Scheduler Check Now"}
+            </Button>
+            {cronResult && (
+              <span className="text-xs text-muted-foreground font-mono truncate max-w-[60%]">
+                {cronResult}
+              </span>
+            )}
+          </div>
         </div>
       </Card>
 

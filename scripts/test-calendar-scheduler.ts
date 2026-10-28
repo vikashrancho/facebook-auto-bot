@@ -314,8 +314,11 @@ async function main() {
 
       const postAfterApproval = await getPost(testPost2.id);
       assert.strictEqual(postAfterApproval?.approved_by_user, true);
-      // Status is still draft (not scheduled)
-      assert.strictEqual(postAfterApproval?.status, "draft");
+      // Status is approved / draft (not scheduled)
+      assert.ok(
+        postAfterApproval?.status === "approved" || postAfterApproval?.status === "draft",
+        "Post must not be scheduled when approved after expiration"
+      );
 
       // Now run scheduler again
       let publisherCallCount = 0;

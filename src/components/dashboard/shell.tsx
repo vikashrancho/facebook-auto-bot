@@ -19,6 +19,7 @@ import {
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Logo } from "@/components/logo";
+import { SchedulerWorker } from "@/components/dashboard/scheduler-worker";
 import { cn } from "@/lib/cn";
 
 const NAV = [
@@ -60,6 +61,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
+      <SchedulerWorker />
 
       {/* Mobile drawer */}
       {mobileOpen && (

@@ -3,6 +3,8 @@ import type { PostStatus } from "@/lib/types";
 
 const STATUS_STYLES: Record<PostStatus, string> = {
   draft: "bg-surface-2 text-muted-foreground",
+  pending_review: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20",
+  approved: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20",
   scheduled: "bg-warning/15 text-warning",
   publishing: "bg-info/15 text-info",
   posted: "bg-success/15 text-success",
@@ -11,6 +13,8 @@ const STATUS_STYLES: Record<PostStatus, string> = {
 
 const STATUS_LABEL: Record<PostStatus, string> = {
   draft: "Draft",
+  pending_review: "Pending Review",
+  approved: "Approved",
   scheduled: "Scheduled",
   publishing: "Publishing...",
   posted: "Posted",

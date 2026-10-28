@@ -309,12 +309,19 @@ export function PostPreviewDrawer({
                   <p className="font-medium text-muted-foreground">
                     {post.scheduled_at ? "Scheduled For" : "Created At"}
                   </p>
-                  <p className="mt-1 font-semibold text-foreground flex items-center gap-1.5">
+                  <p className="mt-1 font-semibold text-foreground flex items-center gap-1.5 flex-wrap">
                     <CalendarCheck size={16} className="text-primary" />
-                    {new Date(post.scheduled_at ?? post.created_at).toLocaleString("en-US", {
-                      dateStyle: "medium",
-                      timeStyle: "short",
-                    })}
+                    <span>
+                      {new Date(post.scheduled_at ?? post.created_at).toLocaleString("en-US", {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })}
+                    </span>
+                    {post.scheduled_at && (
+                      <span className="text-[11px] font-normal text-muted-foreground rounded bg-surface px-1.5 py-0.5 border border-border">
+                        {post.scheduled_timezone || "UTC"}
+                      </span>
+                    )}
                   </p>
                 </div>
 
