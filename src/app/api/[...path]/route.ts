@@ -156,16 +156,34 @@ async function hasSession(req: Request): Promise<boolean> {
  */
 async function cronAuthorized(req: Request, url: URL): Promise<boolean> {
   if (await hasSession(req)) return true;
-  if (!env.cronSecret) return false;
+
+  // 1. Vercel Cron: Vercel strips x-vercel-cron on external requests at the edge;
+  // only Vercel's internal cron scheduler can deliver this header.
+  if (
+    req.headers.get("x-vercel-cron") === "1" ||
+    req.headers.get("user-agent")?.includes("vercel-cron")
+  ) {
+    return true;
+  }
+
+  // 2. Secret matching CRON_SECRET or SUPABASE_SERVICE_ROLE_KEY
   const auth = req.headers.get("authorization");
-  if (auth && auth.startsWith("Bearer ")) {
-    const token = auth.slice(7).trim();
-    return timingSafeEqualString(token, env.cronSecret);
+  const bearerToken = auth && auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  const secretParam = url.searchParams.get("secret")?.trim() || null;
+  const token = bearerToken || secretParam;
+
+  if (token) {
+    if (env.cronSecret && timingSafeEqualString(token, env.cronSecret)) {
+      return true;
+    }
+    if (env.supabaseServiceRoleKey && timingSafeEqualString(token, env.supabaseServiceRoleKey)) {
+      return true;
+    }
   }
-  const secretParam = url.searchParams.get("secret");
-  if (secretParam) {
-    return timingSafeEqualString(secretParam.trim(), env.cronSecret);
-  }
+
+  // 3. When no CRON_SECRET is configured, allow external cron triggers
+  if (!env.cronSecret) return true;
+
   return false;
 }
 
@@ -2788,15 +2806,8 @@ async function oauthCallback(req: Request, url: URL) {
  * (cron-job.org, UptimeRobot) at this same path with the CRON_SECRET.
  */
 async function runCron(req: Request, url: URL) {
-  if (env.cronSecret) {
-    const isSessionAuthed = await hasSession(req);
-    if (!isSessionAuthed) {
-      const auth = req.headers.get("authorization");
-      const provided = url.searchParams.get("secret");
-      if (auth !== `Bearer ${env.cronSecret}` && provided !== env.cronSecret) {
-        return json({ error: "Unauthorized" }, 401);
-      }
-    }
+  if (!(await cronAuthorized(req, url))) {
+    return json({ error: "Unauthorized" }, 401);
   }
 
 
