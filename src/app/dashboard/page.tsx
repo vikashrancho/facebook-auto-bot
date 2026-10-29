@@ -179,21 +179,21 @@ export default async function DashboardOverviewPage() {
           <PostsChart data={chartData} />
         </div>
 
-        {/* Quick Generate Panel (Span 1) */}
+        {/* Quick Actions Panel (Span 1) */}
         <div className="rounded-2xl border border-border/80 bg-surface p-5 sm:p-6 shadow-xs flex flex-col justify-between space-y-5">
           <div className="space-y-2">
             <h2 className="font-heading text-sm sm:text-base font-bold text-foreground">
-              Quick generate
+              Quick actions
             </h2>
             <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">
-              Pick a topic and let the bot write the copy and source the image.
+              Create posts from design templates or check your publishing queue.
             </p>
           </div>
 
-          <Link href="/dashboard/generate" className="w-full">
+          <Link href="/dashboard/templates" className="w-full">
             <Button className="w-full py-3 rounded-xl gap-2 font-semibold shadow-md shadow-primary/20 bg-primary hover:bg-primary-hover text-primary-foreground">
-              <Sparkle size={18} weight="fill" />
-              <span>Generate a post</span>
+              <ImageSquare size={18} weight="fill" />
+              <span>Browse templates</span>
             </Button>
           </Link>
 

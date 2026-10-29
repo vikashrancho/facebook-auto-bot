@@ -426,11 +426,11 @@ function QueueContent() {
           </button>
 
           <Link
-            href="/dashboard/generate"
+            href="/dashboard/templates"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover active:scale-[0.98]"
           >
             <Plus size={16} weight="bold" />
-            <span>Create Post</span>
+            <span>Templates</span>
           </Link>
         </div>
       </div>

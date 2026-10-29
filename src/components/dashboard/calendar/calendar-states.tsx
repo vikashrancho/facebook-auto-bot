@@ -61,11 +61,11 @@ export function CalendarEmptyState({
         </button>
 
         <Link
-          href="/dashboard/generate"
+          href="/dashboard/templates"
           className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-border bg-surface-2 px-4 text-sm font-semibold text-foreground transition hover:bg-surface"
         >
           <Plus size={16} weight="bold" />
-          <span>Create New Post</span>
+          <span>Browse Templates</span>
         </Link>
       </div>
     </div>

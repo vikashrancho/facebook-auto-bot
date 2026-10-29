@@ -35,7 +35,7 @@ const WORKFLOW_STEPS = [
   {
     step: "02",
     title: "Prepare a Content Request",
-    actor: "Dashboard · /dashboard/generate",
+    actor: "ChatGPT Action · Custom GPT",
     description:
       "Enter a topic (e.g. 'Why compound interest beats day trading'), select your preferred tone, image style, and target Facebook Page. The application generates a unique Request ID and stores the request details in Supabase.",
     tag: "User Input",

@@ -5,7 +5,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   House,
-  MagicWand,
   ImageSquare,
   ClockCountdown,
   CalendarDots,
@@ -24,7 +23,6 @@ import { cn } from "@/lib/cn";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: House },
-  { href: "/dashboard/generate", label: "Generate", icon: MagicWand },
   { href: "/dashboard/templates", label: "Templates", icon: ImageSquare },
   { href: "/dashboard/queue", label: "Queue", icon: ClockCountdown },
   { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDots },
@@ -35,7 +33,6 @@ const NAV = [
 
 const TITLES: Record<string, string> = {
   "/dashboard": "Overview",
-  "/dashboard/generate": "Generate a post",
   "/dashboard/templates": "Post Templates & Canvas",
   "/dashboard/queue": "Queue",
   "/dashboard/calendar": "Content Calendar",

@@ -57,11 +57,11 @@ export function QueueEmptyState() {
       </p>
       <div className="mt-6 flex items-center gap-3">
         <Link
-          href="/dashboard/generate"
+          href="/dashboard/templates"
           className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-sm transition hover:bg-primary-hover"
         >
           <Plus size={16} weight="bold" />
-          Create New Post
+          Browse Templates
         </Link>
       </div>
     </div>

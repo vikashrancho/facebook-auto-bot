@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   House,
-  MagicWand,
   ImageSquare,
   ClockCountdown,
   CalendarDots,
@@ -17,7 +16,6 @@ import { cn } from "@/lib/cn";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: House },
-  { href: "/dashboard/generate", label: "Generate", icon: MagicWand },
   { href: "/dashboard/templates", label: "Templates", icon: ImageSquare },
   { href: "/dashboard/queue", label: "Queue", icon: ClockCountdown },
   { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDots },
